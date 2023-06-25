@@ -6,4 +6,17 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-phobos = "0.8.0"
+anyhow = "1.0.71"
+futures = "0.3.28"
+phobos = { git = "https://github.com/NotAPenguin0/phobos-rs", rev = "6173d79" }
+winit = "0.28.6"
+pretty_env_logger = "0.4.0"
+
+[build-dependencies]
+shaderc = { version = "0.8.2", optional = true, features = ["build-from-source"] }
+
+[dev-dependencies]
+pretty_env_logger = "0.4.0"
+
+[features]
+default = ["shaderc"]
