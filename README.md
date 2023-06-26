@@ -7,7 +7,7 @@ This utilizes the [phobos-rs](https://github.com/NotAPenguin0/phobos-rs/tree/mas
 ## TODOs
 <sub><sup>Guys trust me one day I'll complete them. Trust me guys</sub></sup>
 
-- [ ] Hello, window
+- [X] Hello, window
 - [ ] Handle abstraction
 - [ ] Asset system
 - [ ] Asset importing (gltf)
