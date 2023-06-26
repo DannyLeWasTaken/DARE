@@ -144,7 +144,7 @@ impl<T> Storage<T> {
 	/// storage and destroy
 	///
 	pub fn destroy(&self, handle: &Handle<T>) {
-		drop(self.remove(handle)?);
+		drop(self.remove(handle))
 	}
 
 	/// Check if the handle belongs to the storage struct
