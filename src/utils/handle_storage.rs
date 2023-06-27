@@ -116,7 +116,7 @@ impl<T> Storage<T> {
 	///
 	/// # Arguments
 	///
-	/// * `handle` - The [`Handle<T>`] to get underlying data from
+	/// * `handle` - The [`Handle<T>`] to get the underlying data from
 	///
 	/// [`Handle<T>`]: Handle
 	pub fn get_clone(&self, handle: &Handle<T>) -> Option<T>
@@ -129,6 +129,12 @@ impl<T> Storage<T> {
 		self.storage.read().unwrap().get(&handle.index).cloned()
 	}
 
+	/// Gets an immutable reference to the underlying data of the handle
+	///
+	/// # Arguments
+	/// * `handle` - The [`Handle<T>`] to get the underlying data from
+	///
+	/// [`Handle<T>`]: Handle
 	pub fn get_immutable(&self, handle: &Handle<T>) -> Option<&T> {
 		if !self.is_valid_handle(handle) {
 			return None;
