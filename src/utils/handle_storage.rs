@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -49,7 +50,7 @@ impl<T> Clone for Handle<T> {
 pub struct Storage<T> {
 	/// HashMap containing K: `usize` and value: `T` of the storage.
 	/// Effectively holds storage of `T`
-	storage: Arc<RwLock<HashMap<usize, T>>>,
+	storage: Arc<RwLock<HashMap<usize, Arc<T>>>>,
 
 	/// Contains all storage handles including active and inactive.
 	/// Used to check if any incoming handles for methods are still active
@@ -107,7 +108,7 @@ impl<T> Storage<T> {
 		};
 
 		// Insert handles
-		storage.insert(next_index, data);
+		storage.insert(next_index,Arc::new(data));
 		handles.insert(next_index, (&handle).clone());
 		handle
 	}
@@ -126,7 +127,7 @@ impl<T> Storage<T> {
 			return None;
 		}
 
-		self.storage.read().unwrap().get(&handle.index).cloned()
+		Some(self.storage.read().unwrap().get(&handle.index).unwrap().deref().clone())
 	}
 
 	/// Gets an immutable reference to the underlying data of the handle
@@ -135,12 +136,12 @@ impl<T> Storage<T> {
 	/// * `handle` - The [`Handle<T>`] to get the underlying data from
 	///
 	/// [`Handle<T>`]: Handle
-	pub fn get_immutable(&self, handle: &Handle<T>) -> Option<&T> {
+	pub fn get_immutable(&self, handle: &Handle<T>) -> Option<Arc<T>> {
 		if !self.is_valid_handle(handle) {
 			return None;
 		}
 
-		self.storage.read().unwrap().get(&handle.index)
+		Some(self.storage.read().unwrap().get(&handle.index).unwrap().clone())
 	}
 
 	/// Remove data from `Storage<T>` using the handle and invalidates
@@ -150,7 +151,7 @@ impl<T> Storage<T> {
 	/// * `handle` - The [`Handle<T>`] to remove from storage
 	///
 	/// [`Handle<T>`]: Handle
-	pub fn remove(&self, handle: &Handle<T>) -> Option<T> {
+	pub fn remove(&self, handle: &Handle<T>) -> Option<Arc<T>> {
 		if !self.is_valid_handle(handle) {
 			return None;
 		}
