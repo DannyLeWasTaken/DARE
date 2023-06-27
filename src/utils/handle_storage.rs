@@ -7,14 +7,16 @@ static ATOMIC_STORAGE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// Handle to abstract away data that it represents
 ///
 /// # Validity
-/// When we say `Handle<T>` is valid, it means that there is still an active
-/// corresponding data that the `Handle<T>` represents in the `Handle<T>`'s
-/// `Storage<T>` that it belongs to.\
+/// When we say [`Handle<T>`] is valid, it means that there is still an active
+/// corresponding data that the [`Handle<T>`] represents in the [`Handle<T>`]'s
+/// [`Storage<T>`] that it belongs to.\
 /// \
 /// If something is not valid, it means that either:
-/// - The handle was given to the wrong `Storage<T>` that it didn't belong to
-/// - `Handle<T>`'s underlying data has been removed from `Storage<T>`
+/// - The handle was given to the wrong [`Storage<T>`] that it didn't belong to
+/// - [`Handle<T>`]'s underlying data has been removed from [`Storage<T>`]
 ///
+/// [`Handle<T>`]: Handle
+/// [`Storage<T>`]: Storage
 #[derive(Hash, PartialEq, Eq)]
 pub struct Handle<T> {
 	/// Index in the `Storage<T>`'s `storage` HashMap.
@@ -55,12 +57,16 @@ pub struct Storage<T> {
 	handles: Arc<RwLock<HashMap<usize, Handle<T>>>>,
 
 	/// Responsible for ensuring handles are kept up to date. If
-	/// a `Handle<T>`'s `handle_id` does not correspond to the same one found
-	/// in `Handle<T>`, the handle is considered invalid
+	/// a [`Handle<T>`]'s `handle_id` does not correspond to the same one found
+	/// in [`Handle<T>`], the handle is considered invalid
+	///
+	/// [`Handle<T>`]: Handle
 	handle_id: Arc<RwLock<usize>>,
 
-	/// Unique identifier for `Storage<T>` to allow it to distinguish, it's
-	/// handles from other `Storage<T>`s.
+	/// Unique identifier for [`Storage<T>`] to allow it to distinguish, it's
+	/// handles from other [`Storage<T>`]s.
+	///
+	/// [`Storage<T>`]: Storage
 	storage_id: Arc<RwLock<usize>>,
 }
 
@@ -78,13 +84,13 @@ impl<T> Storage<T> {
 		}
 	}
 
-	/// Transfer management of the `data` to ['Storage<T>']
+	/// Transfer management of the `data` to [`Storage<T>`]
 	///
 	/// # Arguments
 	///
-	/// * `data` - Data to be transferred over to ['Storage<T>']
+	/// * `data` - Data to be transferred over to [`Storage<T>`]
 	///
-	/// ['Storage<T>']: .
+	/// ['Storage<T>']: Storage
 	pub fn insert(&self, data: T) -> Handle<T> {
 		let mut handle_id = self.handle_id.write().unwrap();
 		let mut storage = self.storage.write().unwrap();
@@ -110,10 +116,11 @@ impl<T> Storage<T> {
 	///
 	/// # Arguments
 	///
-	/// * `handle` - The `Handle<T>` to get underlying data from
+	/// * `handle` - The [`Handle<T>`] to get underlying data from
 	///
-	pub fn get(&self, handle: &Handle<T>) -> Option<T>
-	where
+	/// [`Handle<T>`]: Handle
+	pub fn get_clone(&self, handle: &Handle<T>) -> Option<T>
+	                 where
 		T: (Clone) {
 		if !self.is_valid_handle(handle) {
 			return None;
@@ -128,6 +135,7 @@ impl<T> Storage<T> {
 	/// # Arguments
 	/// * `handle` - The [`Handle<T>`] to remove from storage
 	///
+	/// [`Handle<T>`]: Handle
 	pub fn remove(&self, handle: &Handle<T>) -> Option<T> {
 		if !self.is_valid_handle(handle) {
 			return None;
@@ -140,9 +148,10 @@ impl<T> Storage<T> {
 	/// Same thing as `remove()` with the added bonus of a drop
 	///
 	/// # Arguments
-	/// * `handle` - The `Handle<T>`'s underlying data to remove from
+	/// * `handle` - The [`Handle<T>`]'s underlying data to remove from
 	/// storage and destroy
 	///
+	/// [`Handle<T>`]: Handle
 	pub fn destroy(&self, handle: &Handle<T>) {
 		drop(self.remove(handle))
 	}
@@ -152,8 +161,9 @@ impl<T> Storage<T> {
 	///
 	/// # Arguments
 	///
-	/// * `handle` - Handle to check
+	/// * `handle` - [`Handle<T>`] to check
 	///
+	/// [`Handle<T>`]: Handle
 	fn is_valid_handle(&self, handle: &Handle<T>) -> bool {
 		return handle.storage_id == *self.handle_id.read().unwrap() &&
 			self.handles.read().unwrap().get(&handle.handle_id)
