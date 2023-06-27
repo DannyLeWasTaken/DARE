@@ -129,6 +129,14 @@ impl<T> Storage<T> {
 		self.storage.read().unwrap().get(&handle.index).cloned()
 	}
 
+	pub fn get_immutable(&self, handle: &Handle<T>) -> Option<&T> {
+		if !self.is_valid_handle(handle) {
+			return None;
+		}
+
+		self.storage.read().unwrap().get(&handle.index)
+	}
+
 	/// Remove data from `Storage<T>` using the handle and invalidates
 	/// all handles with the data. Returns the data back
 	///
