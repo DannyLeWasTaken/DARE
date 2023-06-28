@@ -1,2 +1,5 @@
 error_on_unformatted = true
 imports_granularity = "Crate"
+tab_spaces = 4
+hard_tabs = false
+indent_style = "Block"
