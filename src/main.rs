@@ -1,10 +1,12 @@
-use winit::window::WindowBuilder;
 use anyhow::Result;
 use phobos::image;
 use phobos::prelude::*;
+use phobos::vk::Handle;
 
 mod app;
+mod asset;
 mod spirv;
+mod utils;
 
 struct Resources {
     pub offscreen: phobos::Image,
@@ -15,18 +17,21 @@ struct Resources {
 
 struct Basic {
     resources: Resources,
+    scene: asset::Scene,
 }
 
 impl app::App for Basic {
     fn new(mut ctx: app::Context) -> Result<Self>
     where
-        Self: Sized, {
+        Self: Sized,
+    {
         // Load shader
         let vtx_code = spirv::load_spirv_file(std::path::Path::new("shaders/vert.spv"));
         let frag_code = spirv::load_spirv_file(std::path::Path::new("shaders/frag.spv"));
 
         let vertex = phobos::ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::VERTEX, vtx_code);
-        let fragment = phobos::ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::FRAGMENT, frag_code);
+        let fragment =
+            phobos::ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::FRAGMENT, frag_code);
 
         // Now we can start using the pipeline builder to create our full pipeline.
         let pci = PipelineBuilder::new("sample".to_string())
@@ -44,7 +49,8 @@ impl app::App for Basic {
         ctx.resource_pool.pipelines.create_named_pipeline(pci)?;
 
         let frag_code = spirv::load_spirv_file(std::path::Path::new("shaders/blue.spv"));
-        let fragment = phobos::ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::FRAGMENT, frag_code);
+        let fragment =
+            phobos::ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::FRAGMENT, frag_code);
 
         let pci = PipelineBuilder::new("offscreen".to_string())
             .vertex_input(0, vk::VertexInputRate::VERTEX)
@@ -84,12 +90,40 @@ impl app::App for Basic {
             )?,
         };
 
-        Ok(Self {
-            resources,
-        })
+        // Debug naming
+        let buffer_name = std::ffi::CString::new("Test_naming").unwrap();
+        let name_info = phobos::prelude::vk::DebugUtilsObjectNameInfoEXT::builder()
+            .object_type(phobos::prelude::vk::ObjectType::BUFFER)
+            .object_handle(unsafe { resources.vertex_buffer.handle().as_raw() })
+            .object_name(&buffer_name)
+            .build();
+
+        println!("{} is buffer!", unsafe {
+            resources.vertex_buffer.handle().as_raw()
+        });
+
+        unsafe {
+            ctx.debug_utils
+                .set_debug_utils_object_name(ctx.device.handle().handle(), &name_info)
+                .expect("Failed to set object name!");
+        };
+
+        let loader = asset::gltf_asset_loader::GltfAssetLoader::new();
+        let scene = loader.load_asset_from_file(
+            std::path::Path::new(
+                "C:/Users/Danny/Documents/glTF-Sample-Models/2.0/Cube/glTF/Cube.gltf",
+            ),
+            &mut ctx,
+        );
+
+        Ok(Self { resources, scene })
     }
 
-    fn frame(&mut self, ctx: app::Context, ifc: InFlightContext) -> Result<phobos::sync::submit_batch::SubmitBatch<domain::All>> {
+    fn frame(
+        &mut self,
+        ctx: app::Context,
+        ifc: InFlightContext,
+    ) -> Result<phobos::sync::submit_batch::SubmitBatch<domain::All>> {
         // Define a virtual resource pointing to the swapchain
         let swap_resource = phobos::image!("swapchain");
         let offscreen = phobos::image!("offscreen");
@@ -134,7 +168,7 @@ impl app::App for Basic {
             )
             .execute_fn(|cmd, _ifc, bindings, _| {
                 cmd.full_viewport_scissor()
-                   .bind_graphics_pipeline("sample")?
+                    .bind_graphics_pipeline("sample")?
                     .resolve_and_bind_sampled_image(
                         0,
                         0,
@@ -162,7 +196,10 @@ impl app::App for Basic {
         bindings.bind_image("swapchain", &ifc.swapchain_image);
         bindings.bind_image("offscreen", &self.resources.offscreen_view);
         // create a command buffer capable of executing graphics commands
-        let cmd = ctx.execution_manager.on_domain::<phobos::domain::All>().unwrap();
+        let cmd = ctx
+            .execution_manager
+            .on_domain::<phobos::domain::All>()
+            .unwrap();
         // record render graph to this command buffer
         let cmd = graph
             .record(cmd, &bindings, &mut pool, None, &mut ())?
@@ -174,12 +211,7 @@ impl app::App for Basic {
 }
 
 fn main() -> Result<()> {
-    let window = app::WindowContext::new(
-        "DARE"
-    )?;
+    let window = app::WindowContext::new("DARE")?;
 
-    app::Runner::new("DARE",
-                     Some(&window),
-        |s| s.build()
-    )?.run::<Basic>(Some(window))
+    app::Runner::new("DARE", Some(&window), |s| s.build())?.run::<Basic>(Some(window))
 }

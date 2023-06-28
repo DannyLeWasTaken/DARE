@@ -1,0 +1,2 @@
+error_on_unformatted = true
+imports_granularity = "Crate"
