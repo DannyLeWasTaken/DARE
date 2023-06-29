@@ -1,3 +1,7 @@
+//! Handles are a data type which functionally are pointers without the actual pointing part
+//! built into them. These are useful to pass around to reference meshes. The Storage component
+//! allows them to be managed safely with more explicit garbage collection and thread safety.
+
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
