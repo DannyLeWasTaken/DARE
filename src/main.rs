@@ -1,7 +1,6 @@
 use anyhow::Result;
-use phobos::image;
-use phobos::prelude::*;
 use phobos::vk::Handle;
+use phobos::{GraphicsCmdBuffer, IncompleteCmdBuffer, RecordGraphToCommandBuffer};
 
 mod app;
 mod asset;
@@ -29,18 +28,22 @@ impl app::App for Basic {
         let vtx_code = spirv::load_spirv_file(std::path::Path::new("shaders/vert.spv"));
         let frag_code = spirv::load_spirv_file(std::path::Path::new("shaders/frag.spv"));
 
-        let vertex = phobos::ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::VERTEX, vtx_code);
+        let vertex =
+            phobos::ShaderCreateInfo::from_spirv(phobos::vk::ShaderStageFlags::VERTEX, vtx_code);
         let fragment =
-            phobos::ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::FRAGMENT, frag_code);
+            phobos::ShaderCreateInfo::from_spirv(phobos::vk::ShaderStageFlags::FRAGMENT, frag_code);
 
         // Now we can start using the pipeline builder to create our full pipeline.
-        let pci = PipelineBuilder::new("sample".to_string())
-            .vertex_input(0, vk::VertexInputRate::VERTEX)
-            .vertex_attribute(0, 0, vk::Format::R32G32_SFLOAT)?
-            .vertex_attribute(0, 1, vk::Format::R32G32_SFLOAT)?
-            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
+        let pci = phobos::PipelineBuilder::new("sample".to_string())
+            .vertex_input(0, phobos::vk::VertexInputRate::VERTEX)
+            .vertex_attribute(0, 0, phobos::vk::Format::R32G32_SFLOAT)?
+            .vertex_attribute(0, 1, phobos::vk::Format::R32G32_SFLOAT)?
+            .dynamic_states(&[
+                phobos::vk::DynamicState::VIEWPORT,
+                phobos::vk::DynamicState::SCISSOR,
+            ])
             .blend_attachment_none()
-            .cull_mask(vk::CullModeFlags::NONE)
+            .cull_mask(phobos::vk::CullModeFlags::NONE)
             .attach_shader(vertex.clone())
             .attach_shader(fragment)
             .build();
@@ -50,15 +53,18 @@ impl app::App for Basic {
 
         let frag_code = spirv::load_spirv_file(std::path::Path::new("shaders/blue.spv"));
         let fragment =
-            phobos::ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::FRAGMENT, frag_code);
+            phobos::ShaderCreateInfo::from_spirv(phobos::vk::ShaderStageFlags::FRAGMENT, frag_code);
 
-        let pci = PipelineBuilder::new("offscreen".to_string())
-            .vertex_input(0, vk::VertexInputRate::VERTEX)
-            .vertex_attribute(0, 0, vk::Format::R32G32_SFLOAT)?
-            .vertex_attribute(0, 1, vk::Format::R32G32_SFLOAT)?
-            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
+        let pci = phobos::PipelineBuilder::new("offscreen".to_string())
+            .vertex_input(0, phobos::vk::VertexInputRate::VERTEX)
+            .vertex_attribute(0, 0, phobos::vk::Format::R32G32_SFLOAT)?
+            .vertex_attribute(0, 1, phobos::vk::Format::R32G32_SFLOAT)?
+            .dynamic_states(&[
+                phobos::vk::DynamicState::VIEWPORT,
+                phobos::vk::DynamicState::SCISSOR,
+            ])
             .blend_attachment_none()
-            .cull_mask(vk::CullModeFlags::NONE)
+            .cull_mask(phobos::vk::CullModeFlags::NONE)
             .attach_shader(vertex)
             .attach_shader(fragment)
             .build();
@@ -70,9 +76,9 @@ impl app::App for Basic {
             &mut ctx.allocator,
             800,
             600,
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-            vk::Format::R8G8B8A8_SRGB,
-            vk::SampleCountFlags::TYPE_1,
+            phobos::vk::ImageUsageFlags::COLOR_ATTACHMENT | phobos::vk::ImageUsageFlags::SAMPLED,
+            phobos::vk::Format::R8G8B8A8_SRGB,
+            phobos::vk::SampleCountFlags::TYPE_1,
         )?;
         let data: Vec<f32> = vec![
             -1.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0,
@@ -80,13 +86,13 @@ impl app::App for Basic {
         ];
 
         let resources = Resources {
-            offscreen_view: image.view(vk::ImageAspectFlags::COLOR)?,
+            offscreen_view: image.view(phobos::vk::ImageAspectFlags::COLOR)?,
             offscreen: image,
             sampler: phobos::Sampler::default(ctx.device.clone())?,
             vertex_buffer: app::staged_buffer_upload(
                 ctx.clone(),
                 data.as_slice(),
-                vk::BufferUsageFlags::VERTEX_BUFFER,
+                phobos::vk::BufferUsageFlags::VERTEX_BUFFER,
             )?,
         };
 
@@ -122,8 +128,8 @@ impl app::App for Basic {
     fn frame(
         &mut self,
         ctx: app::Context,
-        ifc: InFlightContext,
-    ) -> Result<phobos::sync::submit_batch::SubmitBatch<domain::All>> {
+        ifc: phobos::InFlightContext,
+    ) -> Result<phobos::sync::submit_batch::SubmitBatch<phobos::domain::All>> {
         // Define a virtual resource pointing to the swapchain
         let swap_resource = phobos::image!("swapchain");
         let offscreen = phobos::image!("offscreen");
@@ -134,18 +140,18 @@ impl app::App for Basic {
         ];
 
         // Define a render graph with one pass that clears the swapchain image
-        let graph = PassGraph::new();
+        let graph = phobos::PassGraph::new();
 
         let mut pool = phobos::pool::LocalPool::new(ctx.resource_pool.clone())?;
 
         // Render pass that renders to an offscreen attachment
-        let offscreen_pass = PassBuilder::render("offscreen")
+        let offscreen_pass = phobos::PassBuilder::render("offscreen")
             .color([1.0, 0.0, 0.0, 1.0])
-            .clear_color_attachment(&offscreen, ClearColor::Float([0.0, 0.0, 0.0, 0.0]))?
+            .clear_color_attachment(&offscreen, phobos::ClearColor::Float([0.0, 0.0, 0.0, 0.0]))?
             .execute_fn(|mut cmd, ifc, _bindings, _| {
                 // Our pass will render a fullscreen quad that 'clears' the screen, just so we can test pipeline creation
                 let mut buffer = ifc.allocate_scratch_vbo(
-                    (vertices.len() * std::mem::size_of::<f32>()) as vk::DeviceSize,
+                    (vertices.len() * std::mem::size_of::<f32>()) as phobos::vk::DeviceSize,
                 )?;
                 let slice = buffer.mapped_slice::<f32>()?;
                 slice.copy_from_slice(vertices.as_slice());
@@ -159,12 +165,15 @@ impl app::App for Basic {
             .build();
 
         // Render pass that samples the offscreen attachment, and possibly does some postprocessing to it
-        let sample_pass = PassBuilder::render(String::from("sample"))
+        let sample_pass = phobos::PassBuilder::render(String::from("sample"))
             .color([0.0, 1.0, 0.0, 1.0])
-            .clear_color_attachment(&swap_resource, ClearColor::Float([0.0, 0.0, 0.0, 0.0]))?
+            .clear_color_attachment(
+                &swap_resource,
+                phobos::ClearColor::Float([0.0, 0.0, 0.0, 0.0]),
+            )?
             .sample_image(
                 offscreen_pass.output(&offscreen).unwrap(),
-                PipelineStage::FRAGMENT_SHADER,
+                phobos::PipelineStage::FRAGMENT_SHADER,
             )
             .execute_fn(|cmd, _ifc, bindings, _| {
                 cmd.full_viewport_scissor()
@@ -180,7 +189,7 @@ impl app::App for Basic {
             })
             .build();
         // Add another pass to handle presentation to the screen
-        let present_pass = PassBuilder::present(
+        let present_pass = phobos::PassBuilder::present(
             "present",
             // This pass uses the output from the clear pass on the swap resource as its input
             sample_pass.output(&swap_resource).unwrap(),
@@ -192,7 +201,7 @@ impl app::App for Basic {
             // Build the graph, now we can bind physical resources and use it.
             .build()?;
 
-        let mut bindings = PhysicalResourceBindings::new();
+        let mut bindings = phobos::PhysicalResourceBindings::new();
         bindings.bind_image("swapchain", &ifc.swapchain_image);
         bindings.bind_image("offscreen", &self.resources.offscreen_view);
         // create a command buffer capable of executing graphics commands
