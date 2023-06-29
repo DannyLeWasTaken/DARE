@@ -3,3 +3,6 @@ imports_granularity = "Crate"
 tab_spaces = 4
 hard_tabs = false
 indent_style = "Block"
+max_width = 100
+force_multiline_blocks = true
+wrap_comments = true
