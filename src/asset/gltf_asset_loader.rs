@@ -1,8 +1,14 @@
+//! Helper struct to load in gltf files and parse them into [`asset::Scene`] objects
+//!
+//! [`asset::Scene`]: crate::asset::Scene
+
 use crate::app;
 use crate::asset;
 use crate::utils::handle_storage;
 use anyhow;
 use anyhow::Result;
+use gltf::accessor::DataType;
+use gltf::Semantic;
 use phobos::vk;
 use phobos::vk::Handle;
 use std::path::Path;
@@ -65,7 +71,7 @@ impl GltfAssetLoader {
             scene.buffers.insert(gltf_buffer.index(), buffer_handle);
         }
 
-        // Load accessors
+        // Load accessors first then load meshes second
         for gltf_mesh in document.meshes() {
             for gltf_primitive in gltf_mesh.primitives() {
                 // Only accept primitives which have indices
@@ -118,11 +124,51 @@ impl GltfAssetLoader {
                         println!("Dimension: {:?}", accessor.dimensions());
                         println!("\n\n");
 
+                        use gltf::accessor::{DataType, Dimensions};
+
                         scene.attributes_storage.insert(asset::AttributeView {
                             buffer_view: buffer
                                 .view(total_offset as u64, buffer_size as u64)
                                 .unwrap(),
-                            stride,
+                            stride: stride as u64,
+                            count: accessor.count() as u64,
+                            component_size: accessor.size() as u64,
+                            // Oh god
+                            format: match (accessor.data_type(), accessor.dimensions()) {
+                                (DataType::F32, Dimensions::Vec4) => {
+                                    vk::Format::R32G32B32A32_SFLOAT
+                                }
+                                (DataType::F32, Dimensions::Vec3) => vk::Format::R32G32B32_SFLOAT,
+                                (DataType::F32, Dimensions::Vec2) => vk::Format::R32G32_SFLOAT,
+                                (DataType::F32, Dimensions::Scalar) => vk::Format::R32_SFLOAT,
+
+                                (DataType::U32, Dimensions::Vec4) => vk::Format::R32G32B32A32_UINT,
+                                (DataType::U32, Dimensions::Vec3) => vk::Format::R32G32B32_UINT,
+                                (DataType::U32, Dimensions::Vec2) => vk::Format::R32G32_UINT,
+                                (DataType::U32, Dimensions::Scalar) => vk::Format::R32_UINT,
+
+                                (DataType::U16, Dimensions::Vec4) => vk::Format::R16G16B16A16_UINT,
+                                (DataType::U16, Dimensions::Vec3) => vk::Format::R16G16B16_UINT,
+                                (DataType::U16, Dimensions::Vec2) => vk::Format::R16G16_UINT,
+                                (DataType::U16, Dimensions::Scalar) => vk::Format::R16_UINT,
+
+                                (DataType::U8, Dimensions::Vec4) => vk::Format::R8G8B8A8_UINT,
+                                (DataType::U8, Dimensions::Vec3) => vk::Format::R8G8B8_UINT,
+                                (DataType::U8, Dimensions::Vec2) => vk::Format::R8G8_UINT,
+                                (DataType::U8, Dimensions::Scalar) => vk::Format::R8_UINT,
+
+                                (DataType::I16, Dimensions::Vec4) => vk::Format::R16G16B16A16_SINT,
+                                (DataType::I16, Dimensions::Vec3) => vk::Format::R16G16B16_SINT,
+                                (DataType::I16, Dimensions::Vec2) => vk::Format::R16G16_SINT,
+                                (DataType::I16, Dimensions::Scalar) => vk::Format::R16_SINT,
+
+                                (DataType::I8, Dimensions::Vec4) => vk::Format::R8G8B8A8_SINT,
+                                (DataType::I8, Dimensions::Vec3) => vk::Format::R8G8B8_SINT,
+                                (DataType::I8, Dimensions::Vec2) => vk::Format::R8G8_SINT,
+                                (DataType::I8, Dimensions::Scalar) => vk::Format::R8_SINT,
+
+                                _ => vk::Format::UNDEFINED,
+                            },
                         })
                     };
 
@@ -132,7 +178,7 @@ impl GltfAssetLoader {
                     if scene.attributes.get(accessor.index()).is_none() {
                         scene
                             .attributes
-                            .insert(accessor.index(), get_attribute_handle(accessor, None))
+                            .insert(accessor.index(), get_attribute_handle(accessor, None));
                     }
                 }
 
@@ -159,8 +205,90 @@ impl GltfAssetLoader {
                 }
             }
         }
+        // Select just one scene for now
+        for gltf_node in document.scenes().next().unwrap().nodes() {
+            let gltf_mat = glam::Mat4::from_cols(
+                glam::Vec4::from(gltf_node.transform().matrix()[0]),
+                glam::Vec4::from(gltf_node.transform().matrix()[1]),
+                glam::Vec4::from(gltf_node.transform().matrix()[2]),
+                glam::Vec4::from(gltf_node.transform().matrix()[3]),
+            );
+            let asset_meshes = self.flatten_meshes(&scene, gltf_node, gltf_mat);
+            for mesh in asset_meshes {
+                scene.meshes.push(scene.meshes_storage.insert(mesh));
+            }
+        }
         scene
     }
 
-    fn load_mesh(&self, mesh: gltf::Mesh) {}
+    /// Recursively creates a vector of all the meshes in the scene from the nodes.
+    /// Adds the meshes' transformation.
+    fn flatten_meshes(
+        &self,
+        scene: &asset::Scene,
+        node: gltf::Node,
+        mut transform: glam::Mat4,
+    ) -> Vec<asset::Mesh> {
+        transform *= glam::Mat4::from_cols(
+            glam::Vec4::from(node.transform().matrix()[0]),
+            glam::Vec4::from(node.transform().matrix()[1]),
+            glam::Vec4::from(node.transform().matrix()[2]),
+            glam::Vec4::from(node.transform().matrix()[3]),
+        );
+
+        // Flatten all the meshes
+        let mut meshes: Vec<asset::Mesh> = Vec::new();
+        if node.mesh().is_some() {
+            let gltf_mesh = node.mesh().unwrap();
+            // Mesh exists in node
+            meshes.append(&mut self.load_mesh(scene, gltf_mesh, transform.clone()));
+        }
+        for child_node in node.children() {
+            meshes.append(&mut self.flatten_meshes(scene, child_node, transform.clone()));
+        }
+        meshes
+    }
+
+    /// Creates a [`Mesh`] object and binds it to the proper handles for its respective handles
+    /// from a given [`gltf::Mesh`].
+    ///
+    /// [`Mesh`]: asset::Mesh
+    /// [`gltf::Mesh`]: gltf::Mesh
+    fn load_mesh(
+        &self,
+        scene: &asset::Scene,
+        mesh: gltf::Mesh,
+        transform: glam::Mat4,
+    ) -> Vec<asset::Mesh> {
+        let mut asset_meshes = Vec::new();
+        for gltf_primitive in mesh.primitives() {
+            let mut position_index: i32 = -1;
+            let mut normal_index: i32 = -1;
+            let mut index_index: i32 = gltf_primitive.indices().unwrap().index() as i32;
+            for gltf_attribute in gltf_primitive.attributes() {
+                match gltf_attribute.0 {
+                    Semantic::Positions => {
+                        position_index = gltf_attribute.1.index() as i32;
+                    }
+                    Semantic::Normals => {
+                        normal_index = gltf_attribute.1.index() as i32;
+                    }
+                    _ => {}
+                }
+            }
+            if position_index < 0 || normal_index < 0 {
+                continue;
+            }
+            let vertex_buffer = scene.attributes.get(position_index as usize);
+            let index_buffer = scene.attributes.get(index_index as usize);
+            if vertex_buffer.is_some() && index_buffer.is_some() {
+                asset_meshes.push(asset::Mesh {
+                    vertex_buffer: vertex_buffer.unwrap().clone(),
+                    index_buffer: index_buffer.unwrap().clone(),
+                    transform,
+                });
+            }
+        }
+        asset_meshes
+    }
 }
