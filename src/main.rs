@@ -1,12 +1,15 @@
 use anyhow::Result;
 use phobos::vk::Handle;
 use phobos::{GraphicsCmdBuffer, IncompleteCmdBuffer, RecordGraphToCommandBuffer};
+use std::sync::{Arc, RwLock};
 
 mod app;
 mod asset;
+mod graphics;
 mod spirv;
 mod utils;
 
+/// Resources used by the basic renderer
 struct Resources {
     pub offscreen: phobos::Image,
     pub offscreen_view: phobos::ImageView,
@@ -14,9 +17,10 @@ struct Resources {
     pub vertex_buffer: phobos::Buffer,
 }
 
+/// The basic renderer
 struct Basic {
     resources: Resources,
-    scene: asset::Scene,
+    scene: Arc<RwLock<asset::Scene>>,
 }
 
 impl app::App for Basic {
@@ -122,7 +126,10 @@ impl app::App for Basic {
             &mut ctx,
         );
 
-        Ok(Self { resources, scene })
+        Ok(Self {
+            resources,
+            scene: Arc::new(RwLock::new(scene)),
+        })
     }
 
     fn frame(
