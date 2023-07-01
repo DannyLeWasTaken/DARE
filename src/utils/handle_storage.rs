@@ -22,7 +22,7 @@ static ATOMIC_STORAGE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 ///
 /// [`Handle<T>`]: Handle
 /// [`Storage<T>`]: Storage
-#[derive(Hash, PartialEq, Eq)]
+#[derive(Copy, Clone, Hash, PartialEq, Eq)]
 pub struct Handle<T> {
     /// Index in the `Storage<T>`'s `storage` HashMap.
     index: usize,
@@ -35,17 +35,6 @@ pub struct Handle<T> {
 
     // Phantom marker to help during compile time for lifetimes and type-safety
     _marker: std::marker::PhantomData<*const T>,
-}
-
-impl<T> Clone for Handle<T> {
-    fn clone(&self) -> Self {
-        Handle {
-            index: self.index,
-            handle_id: self.handle_id,
-            storage_id: self.storage_id,
-            _marker: self._marker.clone(),
-        }
-    }
 }
 
 /// Storage for all the handles\
