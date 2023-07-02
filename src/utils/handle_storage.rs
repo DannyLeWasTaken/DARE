@@ -199,12 +199,45 @@ impl<T> Storage<T> {
     ///
     /// [`Handle<T>`]: Handle
     fn is_valid_handle(&self, handle: &Handle<T>) -> bool {
-        return handle.storage_id == *self.handle_id.read().unwrap()
+        return handle.storage_id == *self.storage_id.read().unwrap()
             && self
                 .handles
                 .read()
                 .unwrap()
                 .get(&handle.handle_id)
                 .is_some_and(|x| x.handle_id == handle.handle_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    /// Test if add + removing from storage works
+    pub fn test_adding_removing_storage() {
+        let storage_1: Storage<String> = Storage::new();
+        let handle = storage_1.insert(String::from("Hello, world!"));
+        assert_eq!(storage_1.handles.read().unwrap().len(), 1);
+        storage_1.remove(&handle);
+        assert_eq!(storage_1.handles.read().unwrap().len(), 0);
+    }
+
+    #[test]
+    /// Test if fetching storage works
+    pub fn test_handle_storage_fetch() {
+        let storage_1: Storage<String> = Storage::new();
+        let handle_1 = storage_1.insert(String::from("Foo"));
+        assert!(storage_1.get_immutable(&handle_1).is_some());
+    }
+
+    #[test]
+    /// Test if handle uniqueness holds up
+    pub fn test_handle_unique() {
+        let storage_1: Storage<String> = Storage::new();
+        let storage_2: Storage<String> = Storage::new();
+        let handle_1 = storage_1.insert(String::from("Bar"));
+        assert!(storage_2.get_immutable(&handle_1).is_none());
+        assert!(storage_1.get_immutable(&handle_1).is_some());
     }
 }
