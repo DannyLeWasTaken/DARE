@@ -34,6 +34,7 @@ pub struct AccelerationStructure {
 pub struct SceneAccelerationStructure {
     tlas: AccelerationStructure,
     blas: AccelerationStructure,
+    instances: phobos::Buffer,
 }
 
 struct BLASBuildInfo<'a> {
@@ -385,6 +386,7 @@ fn compact_blases(
     )
 }
 
+/// Creates the instance buffer from all the created entries
 pub fn make_instances_buffer(
     ctx: &mut crate::app::Context,
     entries: &Vec<AllocatedAS>,
@@ -407,14 +409,13 @@ pub fn make_instances_buffer(
                 .unwrap(),
         );
     }
-    phobos::Buffer::new_aligned(
-        ctx.device.clone(),
-        &mut ctx.allocator,
-        memory::get_size(instances.as_slice()),
-        16_u64,
-        vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-            | vk::BufferUsageFlags::TRANSFER_DST,
-        phobos::MemoryType::CpuToGpu,
+
+    memory::make_transfer_buffer(
+        ctx,
+        instances.as_slice(),
+        Default::default(),
+        Some(16),
+        "Instance Buffer",
     )
 }
 
@@ -532,6 +533,7 @@ pub fn convert_scene_to_blas(
             resources: new_as_resources,
             instances: new_entries,
         },
+        instances: instance_buffer,
     }
 }
 
