@@ -10,10 +10,7 @@ use crate::{asset, utils};
 use anyhow::Result;
 
 use phobos::domain::{All, Compute};
-use phobos::{
-    vk, AccelerationStructureBuildInfo, AccelerationStructureGeometryInstancesData,
-    ComputeCmdBuffer, IncompleteCmdBuffer,
-};
+use phobos::{vk, ComputeCmdBuffer, IncompleteCmdBuffer};
 
 pub struct AllocatedAS {
     buffer: phobos::BufferView,
@@ -37,7 +34,7 @@ pub struct SceneAccelerationStructure {
     instances: phobos::Buffer,
 }
 
-struct BLASBuildInfo<'a> {
+struct AccelerationStructureBuildInfo<'a> {
     // phobos::AccelerationStructureBuildInfo covers:
     // AccelerationStructureBuildGeometryInfoKHR
     // AccelerationStructureBuildRangeInfoKHR
@@ -114,8 +111,8 @@ fn get_blas_entries<'a>(
 /// Gets primarily the size information about the BLAS entry
 fn get_blas_build_infos<'a>(
     ctx: &mut crate::app::Context,
-    mut entries: Vec<BLASBuildInfo<'a>>,
-) -> Vec<BLASBuildInfo<'a>> {
+    mut entries: Vec<AccelerationStructureBuildInfo<'a>>,
+) -> Vec<AccelerationStructureBuildInfo<'a>> {
     let mut buffer_offset: u64 = 0;
     let mut scratch_offset: u64 = 0;
 
@@ -155,7 +152,7 @@ fn get_blas_build_infos<'a>(
 }
 
 /// Get total amount of scratch memory needed for the BLAS
-fn total_scratch_memory(build_infos: &Vec<BLASBuildInfo>) -> u64 {
+fn total_scratch_memory(build_infos: &Vec<AccelerationStructureBuildInfo>) -> u64 {
     let mut size: u64 = 0;
     for build_info in build_infos {
         size += build_info.size_info.unwrap().build_scratch_size;
@@ -164,7 +161,7 @@ fn total_scratch_memory(build_infos: &Vec<BLASBuildInfo>) -> u64 {
 }
 
 /// Get total amount of memory
-fn total_blas_memory(build_infos: &Vec<BLASBuildInfo>) -> u64 {
+fn total_blas_memory(build_infos: &Vec<AccelerationStructureBuildInfo>) -> u64 {
     let mut size: u64 = 0;
     for build_info in build_infos {
         size += build_info.size_info.unwrap().size;
@@ -175,7 +172,7 @@ fn total_blas_memory(build_infos: &Vec<BLASBuildInfo>) -> u64 {
 /// Create the acceleration structure itself alongside the buffers
 fn create_acceleration_structure(
     ctx: &mut crate::app::Context,
-    build_infos: &Vec<BLASBuildInfo<'_>>,
+    build_infos: &Vec<AccelerationStructureBuildInfo<'_>>,
 ) -> (AccelerationStructureResources, Vec<AllocatedAS>) {
     // Create memory for all the BLASes
     let mut entries: Vec<AllocatedAS> = Vec::new();
@@ -254,7 +251,7 @@ fn create_acceleration_structure(
 fn build_blas(
     ctx: &mut crate::app::Context,
     entries: &Vec<AllocatedAS>,
-    build_infos: Vec<BLASBuildInfo>,
+    build_infos: Vec<AccelerationStructureBuildInfo>,
 ) -> Result<Vec<u64>> {
     let mut build_infos: Vec<phobos::AccelerationStructureBuildInfo> =
         build_infos.into_iter().map(|x| x.handle).collect();
@@ -422,7 +419,7 @@ pub fn make_instances_buffer(
 // Gets the build size of the TLAS
 fn get_tlas_build_size<'a>(
     ctx: &mut crate::app::Context,
-    build_info: &BLASBuildInfo,
+    build_info: &AccelerationStructureBuildInfo,
 ) -> phobos::AccelerationStructureBuildSize {
     let mut size_info = phobos::query_build_size(
         &ctx.device,
@@ -441,13 +438,44 @@ fn get_tlas_build_size<'a>(
     size_info
 }
 
+fn get_acceleration_structure_build_sizes<'a>(
+    ctx: &mut crate::app::Context,
+    build_infos: &Vec<AccelerationStructureBuildInfo>,
+    prim_counts: &[u32],
+) -> Vec<Result<phobos::AccelerationStructureBuildSize>> {
+    let mut sizes: Vec<Result<phobos::AccelerationStructureBuildSize>> = Vec::new();
+    for (index, build_info) in build_infos.iter().enumerate() {
+        sizes.push(phobos::query_build_size(
+            &ctx.device,
+            phobos::AccelerationStructureBuildType::Device,
+            &build_info.handle,
+            &prim_counts[index..index + 1],
+        ));
+    }
+    for size_info in sizes.iter_mut().flatten() {
+        size_info.build_scratch_size = memory::align_size(
+            size_info.build_scratch_size,
+            ctx.device
+                .acceleration_structure_properties()
+                .unwrap()
+                .min_acceleration_structure_scratch_offset_alignment as u64,
+        );
+        size_info.size =
+            memory::align_size(size_info.size, phobos::AccelerationStructure::alignment());
+    }
+    sizes
+}
+
 // Gets all the build information for the related TLAS
-fn get_tlas_build_infos<'a>(instances: &phobos::Buffer, instance_count: u32) -> BLASBuildInfo<'a> {
-    BLASBuildInfo {
+fn get_tlas_build_infos<'a>(
+    instances: &phobos::Buffer,
+    instance_count: u32,
+) -> AccelerationStructureBuildInfo<'a> {
+    AccelerationStructureBuildInfo {
         handle: phobos::AccelerationStructureBuildInfo::new_build()
             .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
             .set_type(phobos::AccelerationStructureType::TopLevel)
-            .push_instances(AccelerationStructureGeometryInstancesData {
+            .push_instances(phobos::AccelerationStructureGeometryInstancesData {
                 data: instances.address().into(),
                 flags: vk::GeometryFlagsKHR::OPAQUE
                     | vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION,
@@ -464,25 +492,26 @@ pub fn convert_scene_to_blas(
     scene: &asset::Scene,
 ) -> SceneAccelerationStructure {
     println!("Scene has total # of meshes: {}", scene.meshes.len());
-    let mut blas_build_infos: Vec<BLASBuildInfo> = get_blas_entries(&scene.meshes, scene)
-        .into_iter()
-        .filter_map(|x| {
-            if x.is_err() {
-                println!(
-                    "A mesh failed to load properly due to error {}!",
-                    x.err().unwrap()
-                );
-                None
-            } else {
-                Some(BLASBuildInfo {
-                    handle: x.unwrap(),
-                    size_info: None,
-                    buffer_offset: 0,
-                    scratch_offset: 0,
-                })
-            }
-        })
-        .collect();
+    let mut blas_build_infos: Vec<AccelerationStructureBuildInfo> =
+        get_blas_entries(&scene.meshes, scene)
+            .into_iter()
+            .filter_map(|x| {
+                if x.is_err() {
+                    println!(
+                        "A mesh failed to load properly due to error {}!",
+                        x.err().unwrap()
+                    );
+                    None
+                } else {
+                    Some(AccelerationStructureBuildInfo {
+                        handle: x.unwrap(),
+                        size_info: None,
+                        buffer_offset: 0,
+                        scratch_offset: 0,
+                    })
+                }
+            })
+            .collect();
 
     blas_build_infos = get_blas_build_infos(ctx, blas_build_infos);
     let (as_resources, entries) = create_acceleration_structure(ctx, &blas_build_infos);
@@ -498,7 +527,7 @@ pub fn convert_scene_to_blas(
     let mut tlas_build_info = get_tlas_build_infos(&instance_buffer, new_entries.len() as u32);
     let build_size = get_tlas_build_size(ctx, &tlas_build_info);
     tlas_build_info.size_info = Some(build_size);
-    let mut tlas_build_infos: Vec<BLASBuildInfo> = vec![tlas_build_info];
+    let mut tlas_build_infos: Vec<AccelerationStructureBuildInfo> = vec![tlas_build_info];
 
     let (tlas_resources, tlas_entries) = create_acceleration_structure(ctx, &tlas_build_infos);
     let mut tlas_build_info = tlas_build_infos.remove(0);
