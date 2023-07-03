@@ -10,7 +10,7 @@ use crate::{asset, utils};
 use anyhow::Result;
 
 use phobos::domain::{All, Compute};
-use phobos::{vk, AccelerationStructureBuildType, Buffer, ComputeCmdBuffer, IncompleteCmdBuffer};
+use phobos::{vk, ComputeCmdBuffer, IncompleteCmdBuffer};
 
 pub struct AllocatedAS {
     buffer: phobos::BufferView,
@@ -113,7 +113,7 @@ fn get_blas_build_infos<'a>(
     for mut entry in entries.iter_mut() {
         match phobos::query_build_size(
             &ctx.device,
-            AccelerationStructureBuildType::Device,
+            phobos::AccelerationStructureBuildType::Device,
             &entry.handle,
             std::slice::from_ref(&(entry.handle.as_vulkan().1.get(0).unwrap().primitive_count)),
         ) {
@@ -309,7 +309,7 @@ fn compact_blases(
         .collect::<Vec<u64>>();
     let total_compacted_size: u64 = compacted_sizes.iter().sum();
 
-    as_resource.buffer = Buffer::new_device_local(
+    as_resource.buffer = phobos::Buffer::new_device_local(
         ctx.device.clone(),
         &mut ctx.allocator,
         total_compacted_size,
