@@ -341,6 +341,27 @@ fn compact_blases(
     }
 }
 
+fn get_tlas_build_infos<'a>(instances: Vec<AllocatedAS>) -> BLASBuildInfo<'a> {
+    let mut tlas = phobos::AccelerationStructureBuildInfo::new_build()
+        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+        .set_type(phobos::AccelerationStructureType::TopLevel);
+
+    for instance in instances.iter() {
+        tlas = tlas.push_instances(phobos::AccelerationStructureGeometryInstancesData {
+            data: phobos::DeviceOrHostAddressConst::Device(instance.buffer.address()),
+            flags: vk::GeometryFlagsKHR::OPAQUE
+                | vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION,
+        });
+    }
+    tlas = tlas.push_range(instances.len() as u32, 0, 0, 0);
+    BLASBuildInfo {
+        handle: tlas,
+        size_info: None,
+        buffer_offset: 0,
+        scratch_offset: 0,
+    }
+}
+
 pub fn convert_scene_to_blas(
     ctx: &mut crate::app::Context,
     scene: &asset::Scene,
