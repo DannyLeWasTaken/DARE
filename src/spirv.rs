@@ -7,7 +7,7 @@ pub fn load_spirv_file(path: &Path) -> Vec<u32> {
     let mut f = std::fs::File::open(&path).expect("No SPIRV file found");
     let metadata = fs::metadata(&path).expect("Unable to read metadata");
     let mut buffer = vec![0; metadata.len() as usize];
-    f.read(&mut buffer).expect("Buffer overflow");
+    f.read_exact(&mut buffer).expect("Buffer overflow");
     let (_, binary, _) = unsafe { buffer.align_to::<u32>() };
     Vec::from(binary)
 }
