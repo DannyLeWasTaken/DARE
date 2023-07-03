@@ -8,9 +8,9 @@ This utilizes the [phobos-rs](https://github.com/NotAPenguin0/phobos-rs/tree/mas
 <sub><sup>Guys trust me one day I'll complete them. Trust me guys</sub></sup>
 
 - [X] Hello, window
-- [ ] Handle abstraction
-- [ ] Asset system
-- [ ] Asset importing (gltf)
-- [ ] Asset uploading to GPU (futures)
+- [X] Handle abstraction
+- [X] Asset system
+- [X] Asset importing (gltf)
+- [X] Asset uploading to GPU (futures)
 - [ ] Acceleration structure abstraction
 - [ ] Basic geometry renderer (no shading)
