@@ -339,9 +339,29 @@ fn compact_blases(
         entry.buffer = buffer_view;
         as_buffer_offset += buffer_view.size();
     }
+
+// Gets the build size of the TLAS
+fn get_tlas_build_size<'a>(
+    ctx: &mut crate::app::Context,
+    build_info: &BLASBuildInfo,
+) -> phobos::AccelerationStructureBuildSize {
+    let mut size_info = phobos::query_build_size(
+        &ctx.device,
+        phobos::AccelerationStructureBuildType::Device,
+        &build_info.handle,
+        &[1],
+    ).expect("Unable to build AS");
+    size_info.size = memory::align_size(size_info.size,
+                                        ctx.device.acceleration_structure_properties()
+                                            .unwrap()
+                                            .min_acceleration_structure_scratch_offset_alignment
+                                            as u64
+    );
+    size_info
 }
 
-fn get_tlas_build_infos<'a>(instances: Vec<AllocatedAS>) -> BLASBuildInfo<'a> {
+// Gets all the build information for the related TLAS
+fn get_tlas_build_infos<'a>(ctx: &mut crate::app::Context, instances: &Vec<AllocatedAS>) -> BLASBuildInfo<'a> {
     let mut tlas = phobos::AccelerationStructureBuildInfo::new_build()
         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
         .set_type(phobos::AccelerationStructureType::TopLevel);
@@ -354,12 +374,18 @@ fn get_tlas_build_infos<'a>(instances: Vec<AllocatedAS>) -> BLASBuildInfo<'a> {
         });
     }
     tlas = tlas.push_range(instances.len() as u32, 0, 0, 0);
-    BLASBuildInfo {
+    let mut tlas_build_info = BLASBuildInfo {
         handle: tlas,
         size_info: None,
         buffer_offset: 0,
         scratch_offset: 0,
-    }
+    };
+    let size = get_tlas_build_size(ctx, &tlas_build_info);
+    tlas_build_info.buffer_offset = 0;
+    tlas_build_info.scratch_offset = 0;
+    tlas_build_info.size_info = Some(size);
+
+    tlas_build_info
 }
 
 pub fn convert_scene_to_blas(
@@ -391,6 +417,11 @@ pub fn convert_scene_to_blas(
     let (mut as_resources, mut entries) = create_acceleration_structure(ctx, &blas_build_infos);
     let compact_sizes = build_blas(ctx, &entries, blas_build_infos).expect("TODO: panic message");
     compact_blases(ctx, &mut as_resources, &mut entries, compact_sizes);
+
+    // Make TLAS
+    let tlas_build_info = get_tlas_build_infos(ctx, &entries);
+
+
     AccelerationStructure {
         resources: as_resources,
         instances: entries,
