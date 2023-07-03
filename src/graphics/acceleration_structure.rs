@@ -321,6 +321,9 @@ fn compact_blases(
         vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR,
     )
     .unwrap();
+    ctx.device
+        .set_name(&as_resource.buffer, "BLAS Buffer")
+        .unwrap();
 
     // Update the allocatedAS alongside
     let mut as_buffer_offset: u64 = 0;
@@ -432,7 +435,6 @@ pub fn convert_scene_to_blas(
     // Make TLAS
     let tlas_build_infos = vec![get_tlas_build_infos(ctx, &entries)];
     let (tlas_resources, tlas_entries) = create_acceleration_structure(ctx, &tlas_build_infos);
-    build_blas(ctx, &tlas_entries, tlas_build_infos).expect("TODO: panic message");
 
     SceneAccelerationStructure {
         tlas: AccelerationStructure {
