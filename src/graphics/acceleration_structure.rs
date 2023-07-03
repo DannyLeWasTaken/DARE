@@ -416,29 +416,8 @@ pub fn make_instances_buffer(
     )
 }
 
-// Gets the build size of the TLAS
-fn get_tlas_build_size<'a>(
-    ctx: &mut crate::app::Context,
-    build_info: &AccelerationStructureBuildInfo,
-) -> phobos::AccelerationStructureBuildSize {
-    let mut size_info = phobos::query_build_size(
-        &ctx.device,
-        phobos::AccelerationStructureBuildType::Device,
-        &build_info.handle,
-        &[1],
-    )
-    .expect("Unable to build AS");
-    size_info.size = memory::align_size(
-        size_info.size,
-        ctx.device
-            .acceleration_structure_properties()
-            .unwrap()
-            .min_acceleration_structure_scratch_offset_alignment as u64,
-    );
-    size_info
-}
-
-fn get_acceleration_structure_build_sizes<'a>(
+/// Gets the build sizes with alignment included for the size and returns all the build sizes
+fn get_acceleration_structures_build_sizes(
     ctx: &mut crate::app::Context,
     build_infos: &Vec<AccelerationStructureBuildInfo>,
     prim_counts: &[u32],
@@ -464,6 +443,52 @@ fn get_acceleration_structure_build_sizes<'a>(
             memory::align_size(size_info.size, phobos::AccelerationStructure::alignment());
     }
     sizes
+}
+
+/// Get the build sizes for each build_infos and bind it
+fn set_acceleration_structure_build_sizes<'a>(
+    ctx: &mut crate::app::Context,
+    mut build_infos: Vec<AccelerationStructureBuildInfo>,
+    prim_counts: &[u32],
+) -> Vec<Result<AccelerationStructureBuildInfo<'a>>> {
+    let sizes = get_acceleration_structures_build_sizes(ctx, &build_infos, prim_counts);
+    let mut out_build_infos: Vec<Result<AccelerationStructureBuildInfo>> = Vec::new();
+    for (mut build_info, size) in build_infos.into_iter().zip(sizes.into_iter()) {
+        match size {
+            Err(E) => out_build_infos.push(Err(E)),
+            Ok(size) => {
+                build_info.size_info = Some(size);
+                out_build_infos.push(Ok(build_info));
+            }
+        }
+    }
+    out_build_infos
+}
+
+/// Suballocates all given build_infos by setting their buffer_offset and scratch_offset. If you pass in build infos without a
+/// size_info, it will leave the AS blank with an error
+fn suballocate_acceleration_structures<'a>(
+    ctx: &mut crate::app::Context,
+    mut build_infos: Vec<AccelerationStructureBuildInfo>,
+) -> Vec<Result<AccelerationStructureBuildInfo<'a>>> {
+    let mut out_build_infos: Vec<Result<AccelerationStructureBuildInfo>> = Vec::new();
+    let mut buffer_offset: u64 = 0;
+    let mut scratch_offset: u64 = 0;
+    for mut build_info in build_infos.into_iter() {
+        match build_info.size_info {
+            None => out_build_infos.push(Err(anyhow::anyhow!("size_info expected, found None"))),
+            Some(size_info) => {
+                build_info.buffer_offset = buffer_offset;
+                build_info.scratch_offset = scratch_offset;
+
+                buffer_offset += size_info.size;
+                scratch_offset += size_info.build_scratch_size;
+
+                out_build_infos.push(Ok(build_info));
+            }
+        }
+    }
+    out_build_infos
 }
 
 // Gets all the build information for the related TLAS
