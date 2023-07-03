@@ -10,7 +10,10 @@ use crate::{asset, utils};
 use anyhow::Result;
 
 use phobos::domain::{All, Compute};
-use phobos::{vk, ComputeCmdBuffer, IncompleteCmdBuffer};
+use phobos::{
+    vk, AccelerationStructureBuildInfo, AccelerationStructureGeometryInstancesData,
+    ComputeCmdBuffer, IncompleteCmdBuffer,
+};
 
 pub struct AllocatedAS {
     buffer: phobos::BufferView,
@@ -20,7 +23,7 @@ pub struct AllocatedAS {
 
 pub struct AccelerationStructureResources {
     buffer: phobos::Buffer,
-    scratch: phobos::Buffer,
+    scratch: Option<phobos::Buffer>,
 }
 
 pub struct AccelerationStructure {
@@ -240,7 +243,7 @@ fn create_acceleration_structure(
     (
         AccelerationStructureResources {
             buffer: as_buffer,
-            scratch: scratch_buffer,
+            scratch: Some(scratch_buffer),
         },
         entries,
     )
@@ -304,17 +307,19 @@ fn build_blas(
 /// Create the final compacted acceleration structures
 fn compact_blases(
     ctx: &mut crate::app::Context,
-    as_resource: &mut AccelerationStructureResources,
-    entries: &mut Vec<AllocatedAS>,
+    as_resource: &AccelerationStructureResources,
+    entries: &Vec<AllocatedAS>,
     mut compacted_sizes: Vec<u64>,
-) {
+) -> (Vec<AllocatedAS>, AccelerationStructureResources) {
+    let mut new_entries: Vec<AllocatedAS> = Vec::with_capacity(entries.len());
+
     compacted_sizes = compacted_sizes
         .iter()
         .map(|&x| memory::align_size(x, phobos::AccelerationStructure::alignment()))
         .collect::<Vec<u64>>();
     let total_compacted_size: u64 = compacted_sizes.iter().sum();
 
-    as_resource.buffer = phobos::Buffer::new_device_local(
+    let compacted_buffer = phobos::Buffer::new_device_local(
         ctx.device.clone(),
         &mut ctx.allocator,
         total_compacted_size,
@@ -327,9 +332,8 @@ fn compact_blases(
 
     // Update the allocatedAS alongside
     let mut as_buffer_offset: u64 = 0;
-    for (index, entry) in entries.iter_mut().enumerate() {
-        let buffer_view: phobos::BufferView = as_resource
-            .buffer
+    for (index, entry) in entries.iter().enumerate() {
+        let buffer_view: phobos::BufferView = compacted_buffer
             .view(as_buffer_offset, *compacted_sizes.get(index).unwrap())
             .unwrap();
         println!(
@@ -338,14 +342,17 @@ fn compact_blases(
             buffer_view.size()
         );
         let ty = entry.handle.ty();
+        println!("YOOO our type is: {:?}", ty);
         let new_as = phobos::AccelerationStructure::new(
             ctx.device.clone(),
-            ty,
+            entry.handle.ty(),
             buffer_view,
             vk::AccelerationStructureCreateFlagsKHR::default(),
-        )
-        .unwrap();
-        entry.buffer = buffer_view;
+        );
+        if new_as.is_err() {
+            println!("We fucked up so badly");
+        }
+        let new_as = new_as.unwrap();
         as_buffer_offset += buffer_view.size();
 
         let cmd = ctx
@@ -363,8 +370,52 @@ fn compact_blases(
             .finish()
             .unwrap();
         ctx.execution_manager.submit(cmd).unwrap().wait().unwrap();
-        entry.handle = new_as;
+        new_entries.push(AllocatedAS {
+            buffer: buffer_view,
+            scratch: entry.scratch.clone(),
+            handle: new_as,
+        });
     }
+    (
+        new_entries,
+        AccelerationStructureResources {
+            buffer: compacted_buffer,
+            scratch: None,
+        },
+    )
+}
+
+pub fn make_instances_buffer(
+    ctx: &mut crate::app::Context,
+    entries: &Vec<AllocatedAS>,
+) -> Result<phobos::Buffer> {
+    let mut instances: Vec<phobos::AccelerationStructureInstance> = Vec::new();
+    for entry in entries {
+        instances.push(
+            phobos::AccelerationStructureInstance::default()
+                .mask(0xFF)
+                .flags(vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE)
+                .sbt_record_offset(0)
+                .unwrap()
+                .custom_index(0)
+                .unwrap()
+                .transform(phobos::TransformMatrix::identity())
+                .acceleration_structure(
+                    &entry.handle,
+                    phobos::AccelerationStructureBuildType::Device,
+                )
+                .unwrap(),
+        );
+    }
+    phobos::Buffer::new_aligned(
+        ctx.device.clone(),
+        &mut ctx.allocator,
+        memory::get_size(instances.as_slice()),
+        16_u64,
+        vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+            | vk::BufferUsageFlags::TRANSFER_DST,
+        phobos::MemoryType::CpuToGpu,
+    )
 }
 
 // Gets the build size of the TLAS
@@ -390,34 +441,21 @@ fn get_tlas_build_size<'a>(
 }
 
 // Gets all the build information for the related TLAS
-fn get_tlas_build_infos<'a>(
-    ctx: &mut crate::app::Context,
-    instances: &Vec<AllocatedAS>,
-) -> BLASBuildInfo<'a> {
-    let mut tlas = phobos::AccelerationStructureBuildInfo::new_build()
-        .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-        .set_type(phobos::AccelerationStructureType::TopLevel);
-
-    for instance in instances.iter() {
-        tlas = tlas.push_instances(phobos::AccelerationStructureGeometryInstancesData {
-            data: phobos::DeviceOrHostAddressConst::Device(instance.buffer.address()),
-            flags: vk::GeometryFlagsKHR::OPAQUE
-                | vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION,
-        });
-    }
-    tlas = tlas.push_range(instances.len() as u32, 0, 0, 0);
-    let mut tlas_build_info = BLASBuildInfo {
-        handle: tlas,
+fn get_tlas_build_infos<'a>(instances: &phobos::Buffer, instance_count: u32) -> BLASBuildInfo<'a> {
+    BLASBuildInfo {
+        handle: phobos::AccelerationStructureBuildInfo::new_build()
+            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+            .set_type(phobos::AccelerationStructureType::TopLevel)
+            .push_instances(AccelerationStructureGeometryInstancesData {
+                data: instances.address().into(),
+                flags: vk::GeometryFlagsKHR::OPAQUE
+                    | vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION,
+            })
+            .push_range(instance_count, 0, 0, 0),
         size_info: None,
         buffer_offset: 0,
         scratch_offset: 0,
-    };
-    let size = get_tlas_build_size(ctx, &tlas_build_info);
-    tlas_build_info.buffer_offset = 0;
-    tlas_build_info.scratch_offset = 0;
-    tlas_build_info.size_info = Some(size);
-
-    tlas_build_info
+    }
 }
 
 pub fn convert_scene_to_blas(
@@ -446,19 +484,29 @@ pub fn convert_scene_to_blas(
         .collect();
 
     blas_build_infos = get_blas_build_infos(ctx, blas_build_infos);
-    let (mut as_resources, mut entries) = create_acceleration_structure(ctx, &blas_build_infos);
+    let (as_resources, entries) = create_acceleration_structure(ctx, &blas_build_infos);
     let compact_sizes = build_blas(ctx, &entries, blas_build_infos).expect("TODO: panic message");
-    compact_blases(ctx, &mut as_resources, &mut entries, compact_sizes);
+    let (new_entries, new_as_resources) =
+        compact_blases(ctx, &as_resources, &entries, compact_sizes);
     // Make TLAS
 
-    let mut tlas_build_infos: Vec<BLASBuildInfo> = vec![get_tlas_build_infos(ctx, &entries)];
+    //  TODO: REDO THIS UNHOLY MESS
+    //  TODO: LEARN HOW TO CODE
+
+    let instance_buffer = make_instances_buffer(ctx, &new_entries).unwrap();
+    let mut tlas_build_info = get_tlas_build_infos(&instance_buffer, new_entries.len() as u32);
+    let build_size = get_tlas_build_size(ctx, &tlas_build_info);
+    tlas_build_info.size_info = Some(build_size);
+    let mut tlas_build_infos: Vec<BLASBuildInfo> = vec![tlas_build_info];
+
     let (tlas_resources, tlas_entries) = create_acceleration_structure(ctx, &tlas_build_infos);
     let mut tlas_build_info = tlas_build_infos.remove(0);
     tlas_build_info.handle = tlas_build_info
         .handle
         .dst(&tlas_entries.first().unwrap().handle)
-        .scratch_data(tlas_resources.scratch.address());
+        .scratch_data(tlas_resources.scratch.as_ref().unwrap().address());
 
+    println!("You should be tlas: {:?}", tlas_build_info.handle.ty());
     let cmd = ctx
         .execution_manager
         .on_domain::<Compute>()
@@ -481,8 +529,12 @@ pub fn convert_scene_to_blas(
             instances: tlas_entries,
         },
         blas: AccelerationStructure {
-            resources: as_resources,
-            instances: entries,
+            resources: new_as_resources,
+            instances: new_entries,
         },
     }
 }
+
+// TODO: FOR THE SEGFAULTING MEMORY ERROR LOOK INTO
+// - KEEPING THE LIFETIME OF THE OLD BUFFERS ALIVE
+// - KEEPING THE LIFETIME OF THE OLD AS ALIVE
