@@ -22,7 +22,7 @@ struct Resources {
 struct Basic {
     resources: Resources,
     scene: Arc<RwLock<asset::Scene>>,
-    blas: Arc<graphics::acceleration_structure::AccelerationStructure>,
+    blas: Arc<graphics::acceleration_structure::SceneAccelerationStructure>,
 }
 
 impl app::App for Basic {

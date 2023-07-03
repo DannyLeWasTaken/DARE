@@ -28,6 +28,11 @@ pub struct AccelerationStructure {
     instances: Vec<AllocatedAS>,
 }
 
+pub struct SceneAccelerationStructure {
+    tlas: AccelerationStructure,
+    blas: AccelerationStructure,
+}
+
 struct BLASBuildInfo<'a> {
     // phobos::AccelerationStructureBuildInfo covers:
     // AccelerationStructureBuildGeometryInfoKHR
@@ -339,6 +344,7 @@ fn compact_blases(
         entry.buffer = buffer_view;
         as_buffer_offset += buffer_view.size();
     }
+}
 
 // Gets the build size of the TLAS
 fn get_tlas_build_size<'a>(
@@ -350,18 +356,23 @@ fn get_tlas_build_size<'a>(
         phobos::AccelerationStructureBuildType::Device,
         &build_info.handle,
         &[1],
-    ).expect("Unable to build AS");
-    size_info.size = memory::align_size(size_info.size,
-                                        ctx.device.acceleration_structure_properties()
-                                            .unwrap()
-                                            .min_acceleration_structure_scratch_offset_alignment
-                                            as u64
+    )
+    .expect("Unable to build AS");
+    size_info.size = memory::align_size(
+        size_info.size,
+        ctx.device
+            .acceleration_structure_properties()
+            .unwrap()
+            .min_acceleration_structure_scratch_offset_alignment as u64,
     );
     size_info
 }
 
 // Gets all the build information for the related TLAS
-fn get_tlas_build_infos<'a>(ctx: &mut crate::app::Context, instances: &Vec<AllocatedAS>) -> BLASBuildInfo<'a> {
+fn get_tlas_build_infos<'a>(
+    ctx: &mut crate::app::Context,
+    instances: &Vec<AllocatedAS>,
+) -> BLASBuildInfo<'a> {
     let mut tlas = phobos::AccelerationStructureBuildInfo::new_build()
         .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
         .set_type(phobos::AccelerationStructureType::TopLevel);
@@ -391,7 +402,7 @@ fn get_tlas_build_infos<'a>(ctx: &mut crate::app::Context, instances: &Vec<Alloc
 pub fn convert_scene_to_blas(
     ctx: &mut crate::app::Context,
     scene: &asset::Scene,
-) -> AccelerationStructure {
+) -> SceneAccelerationStructure {
     println!("Scene has total # of meshes: {}", scene.meshes.len());
     let mut blas_build_infos: Vec<BLASBuildInfo> = get_blas_entries(&scene.meshes, scene)
         .into_iter()
@@ -419,11 +430,18 @@ pub fn convert_scene_to_blas(
     compact_blases(ctx, &mut as_resources, &mut entries, compact_sizes);
 
     // Make TLAS
-    let tlas_build_info = get_tlas_build_infos(ctx, &entries);
+    let tlas_build_infos = vec![get_tlas_build_infos(ctx, &entries)];
+    let (tlas_resources, tlas_entries) = create_acceleration_structure(ctx, &tlas_build_infos);
+    build_blas(ctx, &tlas_entries, tlas_build_infos).expect("TODO: panic message");
 
-
-    AccelerationStructure {
-        resources: as_resources,
-        instances: entries,
+    SceneAccelerationStructure {
+        tlas: AccelerationStructure {
+            resources: tlas_resources,
+            instances: tlas_entries,
+        },
+        blas: AccelerationStructure {
+            resources: as_resources,
+            instances: entries,
+        },
     }
 }
