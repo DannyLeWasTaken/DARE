@@ -41,7 +41,8 @@ impl GltfAssetLoader {
                 ctx.device.clone(),
                 &mut ctx.allocator,
                 gltf_buffer.length() as u64,
-                vk::BufferUsageFlags::TRANSFER_DST,
+                vk::BufferUsageFlags::TRANSFER_DST
+                    | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
                 phobos::MemoryType::CpuToGpu,
             )
             .unwrap();
