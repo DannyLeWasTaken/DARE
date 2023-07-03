@@ -22,7 +22,7 @@ pub fn make_transfer_buffer<T: Copy>(
         None => phobos::Buffer::new(
             ctx.device.clone(),
             &mut ctx.allocator,
-            (data.len() * std::mem::size_of::<T>()) as u64,
+            get_size(&data),
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::TRANSFER_DST
                 | usage,
@@ -31,7 +31,7 @@ pub fn make_transfer_buffer<T: Copy>(
         Some(alignment) => phobos::Buffer::new_aligned(
             ctx.device.clone(),
             &mut ctx.allocator,
-            (data.len() * std::mem::size_of::<T>()) as u64,
+            get_size(&data),
             alignment,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::TRANSFER_DST
@@ -45,4 +45,28 @@ pub fn make_transfer_buffer<T: Copy>(
         .copy_from_slice(data);
     ctx.device.set_name(&buffer, name)?;
     Ok(buffer)
+}
+
+pub fn vector_to_array<T: Clone + Copy, const N: usize>(v: Vec<T>) -> Option<[T; N]> {
+    if v.len() == N {
+        let mut arr = [v[0].clone(); N];
+        arr.clone_from_slice(&v);
+        Some(arr)
+    } else {
+        None
+    }
+}
+
+use std::ops::{Add, Div, Rem, Sub};
+
+/// Aligns any given size and alignment to the correct size accounting for alignment
+pub fn align_size<T: Add<Output = T> + Sub<Output = T> + Rem<Output = T> + Copy>(
+    size: T,
+    alignment: T,
+) -> T {
+    return size + alignment - (size % alignment);
+}
+
+pub fn bytes_to_mib(size: f64) -> f64 {
+    return size / (1024.0 * 1024.0);
 }
