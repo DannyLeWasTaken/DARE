@@ -337,15 +337,33 @@ fn compact_blases(
             entry.buffer.size(),
             buffer_view.size()
         );
-        entry.handle = phobos::AccelerationStructure::new(
+        let ty = entry.handle.ty();
+        let new_as = phobos::AccelerationStructure::new(
             ctx.device.clone(),
-            entry.handle.ty(),
+            ty,
             buffer_view,
             vk::AccelerationStructureCreateFlagsKHR::default(),
         )
         .unwrap();
         entry.buffer = buffer_view;
         as_buffer_offset += buffer_view.size();
+
+        let cmd = ctx
+            .execution_manager
+            .on_domain::<Compute>()
+            .unwrap()
+            .compact_acceleration_structure(&entry.handle, &new_as)
+            .unwrap()
+            .memory_barrier(
+                phobos::PipelineStage::ALL_COMMANDS,
+                vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
+                phobos::PipelineStage::ALL_COMMANDS,
+                vk::AccessFlags2::MEMORY_READ,
+            )
+            .finish()
+            .unwrap();
+        ctx.execution_manager.submit(cmd).unwrap().wait().unwrap();
+        entry.handle = new_as;
     }
 }
 
@@ -431,10 +449,31 @@ pub fn convert_scene_to_blas(
     let (mut as_resources, mut entries) = create_acceleration_structure(ctx, &blas_build_infos);
     let compact_sizes = build_blas(ctx, &entries, blas_build_infos).expect("TODO: panic message");
     compact_blases(ctx, &mut as_resources, &mut entries, compact_sizes);
-
     // Make TLAS
-    let tlas_build_infos = vec![get_tlas_build_infos(ctx, &entries)];
+
+    let mut tlas_build_infos: Vec<BLASBuildInfo> = vec![get_tlas_build_infos(ctx, &entries)];
     let (tlas_resources, tlas_entries) = create_acceleration_structure(ctx, &tlas_build_infos);
+    let mut tlas_build_info = tlas_build_infos.remove(0);
+    tlas_build_info.handle = tlas_build_info
+        .handle
+        .dst(&tlas_entries.first().unwrap().handle)
+        .scratch_data(tlas_resources.scratch.address());
+
+    let cmd = ctx
+        .execution_manager
+        .on_domain::<Compute>()
+        .unwrap()
+        .memory_barrier(
+            phobos::PipelineStage::ALL_COMMANDS,
+            vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
+            phobos::PipelineStage::ALL_COMMANDS,
+            vk::AccessFlags2::MEMORY_READ,
+        )
+        .build_acceleration_structure(&tlas_build_info.handle)
+        .unwrap()
+        .finish()
+        .unwrap();
+    ctx.execution_manager.submit(cmd).unwrap().wait().unwrap();
 
     SceneAccelerationStructure {
         tlas: AccelerationStructure {
