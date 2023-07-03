@@ -1,4 +1,5 @@
 use anyhow::Result;
+use phobos::vk;
 use phobos::vk::Handle;
 use phobos::{GraphicsCmdBuffer, IncompleteCmdBuffer, RecordGraphToCommandBuffer};
 use std::sync::{Arc, RwLock};
@@ -21,6 +22,7 @@ struct Resources {
 struct Basic {
     resources: Resources,
     scene: Arc<RwLock<asset::Scene>>,
+    blas: Arc<graphics::acceleration_structure::AccelerationStructure>,
 }
 
 impl app::App for Basic {
@@ -28,6 +30,15 @@ impl app::App for Basic {
     where
         Self: Sized,
     {
+        let loader = asset::gltf_asset_loader::GltfAssetLoader::new();
+        let scene = loader.load_asset_from_file(
+            std::path::Path::new(
+                "C:/Users/Danny/Documents/glTF-Sample-Models/2.0/Suzanne/glTF/Suzanne.gltf",
+            ),
+            &mut ctx,
+        );
+        let blas = graphics::acceleration_structure::convert_scene_to_blas(&mut ctx, &scene);
+
         // Load shader
         let vtx_code = spirv::load_spirv_file(std::path::Path::new("shaders/vert.spv"));
         let frag_code = spirv::load_spirv_file(std::path::Path::new("shaders/frag.spv"));
@@ -74,6 +85,23 @@ impl app::App for Basic {
             .build();
         ctx.resource_pool.pipelines.create_named_pipeline(pci)?;
 
+        {
+            let rgen = spirv::create_shader("shaders/raygen.spv", vk::ShaderStageFlags::RAYGEN_KHR);
+            let rchit =
+                spirv::create_shader("shaders/rayhit.spv", vk::ShaderStageFlags::CLOSEST_HIT_KHR);
+            let rmiss = spirv::create_shader("shaders/raymiss.spv", vk::ShaderStageFlags::MISS_KHR);
+
+            let pci = phobos::RayTracingPipelineBuilder::new("rt")
+                .max_recursion_depth(1)
+                .add_ray_gen_group(rgen)
+                .add_ray_hit_group(Some(rchit), None)
+                .add_ray_miss_group(rmiss)
+                .build();
+            ctx.resource_pool
+                .pipelines
+                .create_named_raytracing_pipeline(pci)?;
+        }
+
         // Define some resources we will use for rendering
         let image = phobos::Image::new(
             ctx.device.clone(),
@@ -118,17 +146,10 @@ impl app::App for Basic {
                 .expect("Failed to set object name!");
         };
 
-        let loader = asset::gltf_asset_loader::GltfAssetLoader::new();
-        let scene = loader.load_asset_from_file(
-            std::path::Path::new(
-                "C:/Users/Danny/Documents/glTF-Sample-Models/2.0/Cube/glTF/Cube.gltf",
-            ),
-            &mut ctx,
-        );
-
         Ok(Self {
             resources,
             scene: Arc::new(RwLock::new(scene)),
+            blas: Arc::new(blas),
         })
     }
 
@@ -228,6 +249,8 @@ impl app::App for Basic {
 
 fn main() -> Result<()> {
     let window = app::WindowContext::new("DARE")?;
-
-    app::Runner::new("DARE", Some(&window), |s| s.build())?.run::<Basic>(Some(window))
+    app::Runner::new("DARE", Some(&window), |settings| {
+        settings.raytracing(true).build()
+    })?
+    .run::<Basic>(Some(window))
 }
