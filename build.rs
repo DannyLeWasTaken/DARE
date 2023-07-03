@@ -82,6 +82,9 @@ fn main() {
                 let shader_kind = match path.extension().unwrap().to_str().unwrap() {
                     "vert" => shaderc::ShaderKind::Vertex,
                     "frag" => shaderc::ShaderKind::Fragment,
+                    "rgen" => shaderc::ShaderKind::RayGeneration,
+                    "rchit" => shaderc::ShaderKind::ClosestHit,
+                    "rmiss" => shaderc::ShaderKind::Miss,
                     _ => panic!("Unsupported shader kind: {:?}", path.file_name().unwrap()),
                 };
                 let output = path.with_extension("spv");
