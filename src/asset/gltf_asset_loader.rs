@@ -54,19 +54,13 @@ impl GltfAssetLoader {
                 .copy_from_slice(buffer_data);
 
             // Debug naming
-            let buffer_name =
-                std::ffi::CString::new(gltf_buffer.name().unwrap_or("unnamed")).unwrap();
-            let name_info = phobos::prelude::vk::DebugUtilsObjectNameInfoEXT::builder()
-                .object_type(vk::ObjectType::BUFFER)
-                .object_handle(unsafe { gpu_buffer.handle().as_raw() })
-                .object_name(&buffer_name)
-                .build();
+            ctx.device
+                .set_name(&gpu_buffer, gltf_buffer.name().unwrap_or("Unnamed"))
+                .expect("Unable to debug name");
 
-            unsafe {
-                ctx.debug_utils
-                    .set_debug_utils_object_name(ctx.device.handle().handle(), &name_info)
-                    .expect("Failed to set object name!");
-            };
+            println!("[gltf]: New buffer!");
+            println!("Buffer size: {}", gpu_buffer.size());
+            println!("Buffer data size in bytes: {}", buffer_data.len());
 
             // Store buffer in scene
             let buffer_handle = scene.buffer_storage.insert(gpu_buffer);
@@ -97,15 +91,8 @@ impl GltfAssetLoader {
                         let accessor_viewer = &accessor.view().unwrap();
                         let total_offset = accessor_viewer.offset() + accessor.offset();
                         let component_size = accessor.size();
-                        let stride = accessor_viewer.stride().unwrap_or(0);
-
-                        // https://github.com/KhronosGroup/glTF-Tutorials/blob/master/gltfTutorial/gltfTutorial_005_BuffersBufferViewsAccessors.md#buffers
-                        let mut buffer_size = if stride > 0 {
-                            stride * (accessor.count() - 1) + component_size
-                        } else {
-                            component_size * accessor.count()
-                        };
-                        //buffer_size = accessor_viewer.length();
+                        let stride = accessor_viewer.stride().unwrap_or(component_size);
+                        let buffer_size = stride * (accessor.count() - 1) + component_size;
 
                         // Get buffer which is referenced and store attribute in scene
                         let buffer = scene
@@ -123,8 +110,14 @@ impl GltfAssetLoader {
                             "Semantic: {:#?}",
                             semantic.unwrap_or(gltf::Semantic::Weights(0))
                         );
-                        println!("Buffer Address: {}", buffer.address());
-                        println!("Buffer offset: {}", total_offset);
+                        println!("Buffer Start Address: {}", buffer.address());
+                        println!(
+                            "Buffer offset: {} + {} = {}",
+                            accessor_viewer.offset(),
+                            accessor.offset(),
+                            total_offset
+                        );
+                        println!("Buffer End Address: {}", total_offset + buffer_size);
                         println!("Buffer stride: {}", stride);
                         println!("View size: {}", buffer_size);
                         println!("Component size: {}", component_size);
@@ -132,7 +125,7 @@ impl GltfAssetLoader {
                         println!("Dimension: {:?}", accessor.dimensions());
                         println!("\n\n");
 
-                        use gltf::accessor::{DataType, Dimensions};
+                        use gltf::accessor::Dimensions;
 
                         scene.attributes_storage.insert(asset::AttributeView {
                             buffer_view: buffer
@@ -222,9 +215,8 @@ impl GltfAssetLoader {
                 glam::Vec4::from(gltf_node.transform().matrix()[2]),
                 glam::Vec4::from(gltf_node.transform().matrix()[3]),
             );
-            let asset_meshes = self.flatten_meshes(&scene, gltf_node, gltf_mat);
+            let asset_meshes = self.flatten_meshes(&scene, gltf_node, gltf_mat, 1);
             for mesh in asset_meshes {
-                println!("we are iterating!");
                 scene
                     .meshes
                     .insert(scene.meshes.len() as u64, scene.meshes_storage.insert(mesh));
@@ -241,6 +233,7 @@ impl GltfAssetLoader {
         scene: &asset::Scene,
         node: gltf::Node,
         mut transform: glam::Mat4,
+        layer: u32,
     ) -> Vec<asset::Mesh> {
         transform *= glam::Mat4::from_cols(
             glam::Vec4::from(node.transform().matrix()[0]),
@@ -254,12 +247,11 @@ impl GltfAssetLoader {
         if node.mesh().is_some() {
             let gltf_mesh = node.mesh().unwrap();
             // Mesh exists in node
-            println!("Mesh exists!");
             meshes.append(&mut self.load_mesh(scene, gltf_mesh, transform));
-            println!("We are now size: {}", meshes.len());
         }
+        println!("Found {} meshes on layer {}", meshes.len(), layer);
         for child_node in node.children() {
-            meshes.append(&mut self.flatten_meshes(scene, child_node, transform));
+            meshes.append(&mut self.flatten_meshes(scene, child_node, transform, layer + 1));
         }
         meshes
     }
