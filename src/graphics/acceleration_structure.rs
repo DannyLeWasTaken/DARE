@@ -15,12 +15,13 @@ use phobos::{vk, ComputeCmdBuffer, IncompleteCmdBuffer};
 pub struct AllocatedAS {
     buffer: phobos::BufferView,
     scratch: phobos::BufferView,
-    handle: phobos::AccelerationStructure,
+    handle: usize,
 }
 
 pub struct AccelerationStructureResources {
-    buffer: phobos::Buffer,
+    buffer: Option<phobos::Buffer>,
     scratch: Option<phobos::Buffer>,
+    acceleration_structures: Vec<phobos::AccelerationStructure>,
 }
 
 pub struct AccelerationStructure {
@@ -132,7 +133,8 @@ fn create_acceleration_structure(
     build_infos: &Vec<AccelerationStructureBuildInfo<'_>>,
 ) -> (AccelerationStructureResources, Vec<AllocatedAS>) {
     // Create memory for all the BLASes
-    let mut entries: Vec<AllocatedAS> = Vec::new();
+    let mut entries: Vec<AllocatedAS> = Vec::with_capacity(build_infos.len());
+    let mut instances: Vec<phobos::AccelerationStructure> = Vec::with_capacity(build_infos.len());
     let buffer_size = total_blas_memory(build_infos);
     let scratch_size = total_scratch_memory(build_infos);
     let as_buffer = phobos::Buffer::new_device_local(
@@ -154,8 +156,6 @@ fn create_acceleration_structure(
     ctx.device
         .set_name(&scratch_buffer, "Scratch memory")
         .unwrap();
-    // Allocate the scratch buffer for building the acceleration structure
-    entries.reserve(build_infos.len());
 
     // Iterate of each entry
     for build_info in build_infos.iter() {
@@ -187,18 +187,20 @@ fn create_acceleration_structure(
         ctx.device
             .set_name(&acceleration_structure, "Acceleration structure")
             .unwrap();
+        instances.push(acceleration_structure);
         let entry = AllocatedAS {
             buffer: buffer_view,
             scratch: scratch_view,
-            handle: acceleration_structure,
+            handle: instances.len() - 1,
         };
         entries.push(entry);
     }
 
     (
         AccelerationStructureResources {
-            buffer: as_buffer,
+            buffer: Some(as_buffer),
             scratch: Some(scratch_buffer),
+            acceleration_structures: instances,
         },
         entries,
     )
@@ -207,24 +209,28 @@ fn create_acceleration_structure(
 /// Builds all the BLAS structures in the given BLAS
 fn build_blas(
     ctx: &mut crate::app::Context,
+    acceleration_structures_resource: &AccelerationStructureResources,
     entries: &[AllocatedAS],
     build_infos: Vec<AccelerationStructureBuildInfo>,
 ) -> Result<Vec<u64>> {
-    let mut build_infos: Vec<phobos::AccelerationStructureBuildInfo> =
+    let build_infos: Vec<phobos::AccelerationStructureBuildInfo> =
         build_infos.into_iter().map(|x| x.handle).collect();
 
-    // Indicate the instance address + scratch
-    build_infos = entries
+    let build_infos = entries
         .iter()
+        .zip(
+            acceleration_structures_resource
+                .acceleration_structures
+                .iter(),
+        )
         .zip(build_infos.into_iter())
-        .map(|(allocated_as, build_info)| {
+        .map(|((allocated_as, acceleration_structure), build_info)| {
             build_info
-                .dst(&allocated_as.handle)
+                .dst(acceleration_structure)
                 .scratch_data(allocated_as.scratch.address())
         })
         .collect::<Vec<phobos::AccelerationStructureBuildInfo>>();
 
-    // Create a query pool
     let mut query_pool = phobos::QueryPool::<phobos::AccelerationStructureCompactedSizeQuery>::new(
         ctx.device.clone(),
         phobos::QueryPoolCreateInfo {
@@ -232,29 +238,27 @@ fn build_blas(
             statistic_flags: None,
         },
     )?;
-    let mut fences: Vec<phobos::pool::Pooled<phobos::Fence>> =
-        Vec::with_capacity(build_infos.len());
+    query_pool.reset();
 
-    for (entry, build_info) in entries.iter().zip(build_infos.iter()) {
+    {
         let command = ctx
             .execution_manager
             .on_domain::<Compute>()?
-            .build_acceleration_structure(build_info)?
+            .build_acceleration_structures(build_infos.as_slice())?
             .memory_barrier(
                 phobos::PipelineStage::ACCELERATION_STRUCTURE_BUILD_KHR,
                 vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
                 phobos::PipelineStage::ALL_COMMANDS,
                 vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
             )
-            .write_acceleration_structure_properties(&entry.handle, &mut query_pool)?
+            .write_acceleration_structures_properties(
+                acceleration_structures_resource
+                    .acceleration_structures
+                    .as_slice(),
+                &mut query_pool,
+            )?
             .finish()?;
-        let fence = ctx.execution_manager.submit(command).unwrap();
-        fences.push(fence);
-    }
-
-    // Wait for all the fences to finish up
-    for mut fence in fences {
-        fence.wait()?;
+        ctx.execution_manager.submit(command)?.wait()?;
     }
     query_pool.wait_for_all_results()
 }
@@ -267,7 +271,7 @@ fn compact_blases(
     mut compacted_sizes: Vec<u64>,
 ) -> (Vec<AllocatedAS>, AccelerationStructureResources) {
     let mut new_entries: Vec<AllocatedAS> = Vec::with_capacity(entries.len());
-
+    let mut new_structures: Vec<phobos::AccelerationStructure> = Vec::with_capacity(entries.len());
     compacted_sizes = compacted_sizes
         .iter()
         .map(|&x| memory::align_size(x, phobos::AccelerationStructure::alignment()))
@@ -282,7 +286,7 @@ fn compact_blases(
     )
     .unwrap();
     ctx.device
-        .set_name(&as_resource.buffer, "BLAS Buffer")
+        .set_name(&compacted_buffer, "BLAS Buffer")
         .unwrap();
 
     // Update the allocatedAS alongside
@@ -298,7 +302,7 @@ fn compact_blases(
         );
         let new_as = phobos::AccelerationStructure::new(
             ctx.device.clone(),
-            entry.handle.ty(),
+            phobos::AccelerationStructureType::BottomLevel,
             buffer_view,
             vk::AccelerationStructureCreateFlagsKHR::default(),
         );
@@ -309,7 +313,13 @@ fn compact_blases(
             .execution_manager
             .on_domain::<Compute>()
             .unwrap()
-            .compact_acceleration_structure(&entry.handle, &new_as)
+            .compact_acceleration_structure(
+                as_resource
+                    .acceleration_structures
+                    .get(entry.handle)
+                    .unwrap(),
+                &new_as,
+            )
             .unwrap()
             .memory_barrier(
                 phobos::PipelineStage::ALL_COMMANDS,
@@ -320,17 +330,19 @@ fn compact_blases(
             .finish()
             .unwrap();
         ctx.execution_manager.submit(cmd).unwrap().wait().unwrap();
+        new_structures.push(new_as);
         new_entries.push(AllocatedAS {
             buffer: buffer_view,
             scratch: entry.scratch.clone(),
-            handle: new_as,
+            handle: new_structures.len() - 1,
         });
     }
     (
         new_entries,
         AccelerationStructureResources {
-            buffer: compacted_buffer,
+            buffer: Some(compacted_buffer),
             scratch: None,
+            acceleration_structures: new_structures,
         },
     )
 }
@@ -338,6 +350,7 @@ fn compact_blases(
 /// Creates the instance buffer from all the created entries
 pub fn make_instances_buffer(
     ctx: &mut crate::app::Context,
+    as_resources: &AccelerationStructureResources,
     entries: &Vec<AllocatedAS>,
 ) -> Result<phobos::Buffer> {
     let mut instances: Vec<phobos::AccelerationStructureInstance> = Vec::new();
@@ -352,7 +365,10 @@ pub fn make_instances_buffer(
                 .unwrap()
                 .transform(phobos::TransformMatrix::identity())
                 .acceleration_structure(
-                    &entry.handle,
+                    as_resources
+                        .acceleration_structures
+                        .get(entry.handle)
+                        .unwrap(),
                     phobos::AccelerationStructureBuildType::Device,
                 )
                 .unwrap(),
@@ -524,7 +540,9 @@ pub fn convert_scene_to_blas(
             .collect::<Vec<AccelerationStructureBuildInfo>>();
     }
     let (as_resources, entries) = create_acceleration_structure(ctx, &blas_build_infos);
-    let compact_sizes = build_blas(ctx, &entries, blas_build_infos).expect("TODO: panic message");
+    let compact_sizes =
+        build_blas(ctx, &as_resources, &entries, blas_build_infos).expect("Failed to build BLAS");
+    println!("Built BLAS");
     let (new_entries, new_as_resources) =
         compact_blases(ctx, &as_resources, &entries, compact_sizes);
     // Make TLAS
@@ -532,7 +550,7 @@ pub fn convert_scene_to_blas(
     //  TODO: REDO THIS UNHOLY MESS
     //  TODO: LEARN HOW TO CODE
 
-    let instance_buffer = make_instances_buffer(ctx, &new_entries)
+    let instance_buffer = make_instances_buffer(ctx, &as_resources, &new_entries)
         .map_err(|e| println!("Could not make instance buffer: {}", e))
         .ok()
         .unwrap();
@@ -558,7 +576,12 @@ pub fn convert_scene_to_blas(
     let mut tlas_build_info = tlas_build_infos.remove(0);
     tlas_build_info.handle = tlas_build_info
         .handle
-        .dst(&tlas_entries.first().unwrap().handle)
+        .dst(
+            tlas_resources
+                .acceleration_structures
+                .get(tlas_entries.get(0).unwrap().handle)
+                .unwrap(),
+        )
         .scratch_data(tlas_resources.scratch.as_ref().unwrap().address());
 
     println!("You should be tlas: {:?}", tlas_build_info.handle.ty());

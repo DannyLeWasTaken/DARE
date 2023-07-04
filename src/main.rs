@@ -33,8 +33,9 @@ impl app::App for Basic {
         let loader = asset::gltf_asset_loader::GltfAssetLoader::new();
         let scene = loader.load_asset_from_file(
             std::path::Path::new(
-                //"C:/Users/Danny/Documents/glTF-Sample-Models/2.0/Suzanne/glTF/Suzanne.gltf",
-                "C:/Users/Danny/Documents/gltF-Sample-Models/2.0//BoxInterleaved/gltF/BoxInterleaved.gltf",
+                "C:/Users/Danny/Documents/glTF-Sample-Models/2.0/Suzanne/glTF/Suzanne.gltf",
+                //"C:/Users/Danny/Documents/gltF-Sample-Models/2.0//BoxInterleaved/gltF/BoxInterleaved.gltf",
+                //"C:/Users/Danny/Documents/glTF-Sample-Models/2.0/Sponza/glTF/Sponza.gltf",
             ),
             &mut ctx,
         );
