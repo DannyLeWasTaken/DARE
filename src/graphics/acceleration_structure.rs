@@ -10,7 +10,7 @@ use crate::{asset, utils};
 use anyhow::Result;
 
 use phobos::domain::{All, Compute};
-use phobos::{vk, ComputeCmdBuffer, IncompleteCmdBuffer};
+use phobos::{vk, Buffer, ComputeCmdBuffer, IncompleteCmdBuffer};
 
 pub struct AllocatedAS {
     buffer: phobos::BufferView,
@@ -106,49 +106,6 @@ fn get_blas_entries<'a>(
         ));
     }
     build_infos
-}
-
-/// Gets primarily the size information about the BLAS entry
-fn get_blas_build_infos<'a>(
-    ctx: &mut crate::app::Context,
-    mut entries: Vec<AccelerationStructureBuildInfo<'a>>,
-) -> Vec<AccelerationStructureBuildInfo<'a>> {
-    let mut buffer_offset: u64 = 0;
-    let mut scratch_offset: u64 = 0;
-
-    for mut entry in entries.iter_mut() {
-        match phobos::query_build_size(
-            &ctx.device,
-            phobos::AccelerationStructureBuildType::Device,
-            &entry.handle,
-            std::slice::from_ref(&(entry.handle.as_vulkan().1.get(0).unwrap().primitive_count)),
-        ) {
-            Err(e) => {
-                println!("Failed to get size of mesh due to: {}", e);
-            }
-            Ok(mut build_size) => {
-                // https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkAccelerationStructureCreateInfoKHR.html/
-                build_size.size =
-                    memory::align_size(build_size.size, phobos::AccelerationStructure::alignment());
-                build_size.build_scratch_size = memory::align_size(
-                    build_size.build_scratch_size,
-                    ctx.device
-                        .acceleration_structure_properties()
-                        .unwrap()
-                        .min_acceleration_structure_scratch_offset_alignment
-                        as u64,
-                );
-                entry.buffer_offset = buffer_offset;
-                entry.scratch_offset = scratch_offset;
-
-                buffer_offset += build_size.size;
-                scratch_offset += build_size.build_scratch_size;
-
-                entry.size_info = Some(build_size);
-            }
-        }
-    }
-    entries
 }
 
 /// Get total amount of scratch memory needed for the BLAS
@@ -340,16 +297,12 @@ fn compact_blases(
             buffer_view.size()
         );
         let ty = entry.handle.ty();
-        println!("YOOO our type is: {:?}", ty);
         let new_as = phobos::AccelerationStructure::new(
             ctx.device.clone(),
             entry.handle.ty(),
             buffer_view,
             vk::AccelerationStructureCreateFlagsKHR::default(),
         );
-        if new_as.is_err() {
-            println!("We fucked up so badly");
-        }
         let new_as = new_as.unwrap();
         as_buffer_offset += buffer_view.size();
 
@@ -417,7 +370,7 @@ pub fn make_instances_buffer(
 }
 
 /// Gets the build sizes with alignment included for the size and returns all the build sizes
-fn get_acceleration_structures_build_sizes(
+fn get_build_info_sizes(
     ctx: &mut crate::app::Context,
     build_infos: &Vec<AccelerationStructureBuildInfo>,
     prim_counts: &[u32],
@@ -446,12 +399,12 @@ fn get_acceleration_structures_build_sizes(
 }
 
 /// Get the build sizes for each build_infos and bind it
-fn set_acceleration_structure_build_sizes<'a>(
+fn set_build_infos_sizes<'a>(
     ctx: &mut crate::app::Context,
-    mut build_infos: Vec<AccelerationStructureBuildInfo>,
+    build_infos: Vec<AccelerationStructureBuildInfo<'a>>,
     prim_counts: &[u32],
 ) -> Vec<Result<AccelerationStructureBuildInfo<'a>>> {
-    let sizes = get_acceleration_structures_build_sizes(ctx, &build_infos, prim_counts);
+    let sizes = get_build_info_sizes(ctx, &build_infos, prim_counts);
     let mut out_build_infos: Vec<Result<AccelerationStructureBuildInfo>> = Vec::new();
     for (mut build_info, size) in build_infos.into_iter().zip(sizes.into_iter()) {
         match size {
@@ -466,12 +419,13 @@ fn set_acceleration_structure_build_sizes<'a>(
 }
 
 /// Suballocates all given build_infos by setting their buffer_offset and scratch_offset. If you pass in build infos without a
-/// size_info, it will leave the AS blank with an error
-fn suballocate_acceleration_structures<'a>(
+/// size_info, it will leave the AS blank with an error.
+fn suballocate_build_infos<'a>(
     ctx: &mut crate::app::Context,
-    mut build_infos: Vec<AccelerationStructureBuildInfo>,
+    build_infos: Vec<AccelerationStructureBuildInfo<'a>>,
 ) -> Vec<Result<AccelerationStructureBuildInfo<'a>>> {
-    let mut out_build_infos: Vec<Result<AccelerationStructureBuildInfo>> = Vec::new();
+    let mut out_build_infos: Vec<Result<AccelerationStructureBuildInfo>> =
+        Vec::with_capacity(build_infos.len());
     let mut buffer_offset: u64 = 0;
     let mut scratch_offset: u64 = 0;
     for mut build_info in build_infos.into_iter() {
@@ -538,7 +492,39 @@ pub fn convert_scene_to_blas(
             })
             .collect();
 
-    blas_build_infos = get_blas_build_infos(ctx, blas_build_infos);
+    //let blas_build_infos: Vec<Result<AccelerationStructureBuildInfo>>;
+    {
+        let primitive_counts: Vec<u32> = blas_build_infos
+            .iter()
+            .map(|build_info| {
+                build_info
+                    .handle
+                    .as_vulkan()
+                    .1
+                    .get(0)
+                    .unwrap()
+                    .primitive_count
+            })
+            .collect::<Vec<u32>>();
+        blas_build_infos =
+            set_build_infos_sizes(ctx, blas_build_infos, primitive_counts.as_slice())
+                .into_iter()
+                .filter_map(|build_info| {
+                    build_info
+                        .map_err(|e| println!("Failed to bind size_info due to: {}", e))
+                        .ok()
+                })
+                .collect::<Vec<AccelerationStructureBuildInfo>>();
+        // Suballocate it
+        blas_build_infos = suballocate_build_infos(ctx, blas_build_infos)
+            .into_iter()
+            .filter_map(|build_info| {
+                build_info
+                    .map_err(|e| println!("Couldn't suballocate AS due to: {}", e))
+                    .ok()
+            })
+            .collect::<Vec<AccelerationStructureBuildInfo>>();
+    }
     let (as_resources, entries) = create_acceleration_structure(ctx, &blas_build_infos);
     let compact_sizes = build_blas(ctx, &entries, blas_build_infos).expect("TODO: panic message");
     let (new_entries, new_as_resources) =
@@ -548,11 +534,27 @@ pub fn convert_scene_to_blas(
     //  TODO: REDO THIS UNHOLY MESS
     //  TODO: LEARN HOW TO CODE
 
-    let instance_buffer = make_instances_buffer(ctx, &new_entries).unwrap();
-    let mut tlas_build_info = get_tlas_build_infos(&instance_buffer, new_entries.len() as u32);
-    let build_size = get_tlas_build_size(ctx, &tlas_build_info);
-    tlas_build_info.size_info = Some(build_size);
-    let mut tlas_build_infos: Vec<AccelerationStructureBuildInfo> = vec![tlas_build_info];
+    let instance_buffer = make_instances_buffer(ctx, &new_entries)
+        .map_err(|e| println!("Could not make instance buffer: {}", e))
+        .ok()
+        .unwrap();
+    let tlas_build_infos = get_tlas_build_infos(&instance_buffer, new_entries.len() as u32);
+    let mut tlas_build_infos = set_build_infos_sizes(ctx, vec![tlas_build_infos], &[1])
+        .into_iter()
+        .filter_map(|build_info| {
+            build_info
+                .map_err(|e| println!("Failed to make TLAS due to: {}", e))
+                .ok()
+        })
+        .collect::<Vec<AccelerationStructureBuildInfo>>();
+    tlas_build_infos = suballocate_build_infos(ctx, tlas_build_infos)
+        .into_iter()
+        .filter_map(|build_info| {
+            build_info
+                .map_err(|e| println!("Unable suballocate TLAS due to: {}", e))
+                .ok()
+        })
+        .collect::<Vec<AccelerationStructureBuildInfo>>();
 
     let (tlas_resources, tlas_entries) = create_acceleration_structure(ctx, &tlas_build_infos);
     let mut tlas_build_info = tlas_build_infos.remove(0);
