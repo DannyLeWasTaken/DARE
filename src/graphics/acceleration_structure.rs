@@ -240,26 +240,26 @@ fn build_blas(
     )?;
     query_pool.reset();
 
-    {
-        let command = ctx
-            .execution_manager
-            .on_domain::<Compute>()?
-            .build_acceleration_structures(build_infos.as_slice())?
-            .memory_barrier(
-                phobos::PipelineStage::ACCELERATION_STRUCTURE_BUILD_KHR,
-                vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
-                phobos::PipelineStage::ALL_COMMANDS,
-                vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
-            )
-            .write_acceleration_structures_properties(
-                acceleration_structures_resource
-                    .acceleration_structures
-                    .as_slice(),
-                &mut query_pool,
-            )?
-            .finish()?;
-        ctx.execution_manager.submit(command)?.wait()?;
-    }
+    let mut command = ctx
+        .execution_manager
+        .on_domain::<Compute>()?
+        .build_acceleration_structures(build_infos.as_slice())?
+        .memory_barrier(
+            phobos::PipelineStage::ACCELERATION_STRUCTURE_BUILD_KHR,
+            vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
+            phobos::PipelineStage::ALL_COMMANDS,
+            vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
+        )
+        .write_acceleration_structures_properties(
+            acceleration_structures_resource
+                .acceleration_structures
+                .as_slice(),
+            &mut query_pool,
+        )?
+        .finish()?;
+
+    ctx.execution_manager.submit(command)?.wait()?;
+
     query_pool.wait_for_all_results()
 }
 
