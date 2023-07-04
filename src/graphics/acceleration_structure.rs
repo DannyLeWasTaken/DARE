@@ -59,6 +59,8 @@ fn get_blas_entries<'a>(
     let mut build_infos: Vec<Result<phobos::AccelerationStructureBuildInfo<'a>>> =
         Vec::with_capacity(meshes.len());
 
+    let mut total_primitive_count = 0;
+
     for mesh_handle in meshes {
         let mesh = scene.meshes_storage.get_immutable(mesh_handle);
         if mesh.is_none() {
@@ -83,6 +85,13 @@ fn get_blas_entries<'a>(
 
         // Create the build information for the mesh
         let index_type = index_type.unwrap();
+        // Check if the number of indices can make a triangle
+        assert_eq!((index_buffer.count % 3), 0);
+        assert!(
+            vertex_buffer.stride > 0,
+            "[BLAS]: Given vertex buffer has a stride of zero"
+        );
+        total_primitive_count += index_buffer.count / 3;
         build_infos.push(Ok(
             phobos::AccelerationStructureBuildInfo::new_build()
                 .flags(
@@ -213,9 +222,24 @@ fn build_blas(
     entries: &[AllocatedAS],
     build_infos: Vec<AccelerationStructureBuildInfo>,
 ) -> Result<Vec<u64>> {
+    // Make sure we have the right amounts
+    assert_eq!(build_infos.len(), entries.len());
+    assert_eq!(
+        entries.len(),
+        acceleration_structures_resource
+            .acceleration_structures
+            .len()
+    );
+
     let build_infos: Vec<phobos::AccelerationStructureBuildInfo> =
         build_infos.into_iter().map(|x| x.handle).collect();
-
+    assert_eq!(
+        build_infos.len(),
+        acceleration_structures_resource
+            .acceleration_structures
+            .len()
+    );
+    assert_eq!(build_infos.len(), entries.len());
     let build_infos = entries
         .iter()
         .zip(
@@ -238,7 +262,6 @@ fn build_blas(
             statistic_flags: None,
         },
     )?;
-    query_pool.reset();
 
     let mut command = ctx
         .execution_manager
@@ -291,15 +314,18 @@ fn compact_blases(
 
     // Update the allocatedAS alongside
     let mut as_buffer_offset: u64 = 0;
+    assert_eq!(entries.len(), compacted_sizes.len());
     for (index, entry) in entries.iter().enumerate() {
         let buffer_view: phobos::BufferView = compacted_buffer
             .view(as_buffer_offset, *compacted_sizes.get(index).unwrap())
             .unwrap();
+        /**
         println!(
             "Size before compactation: {}. Size after: {}",
             entry.buffer.size(),
             buffer_view.size()
         );
+        **/
         let new_as = phobos::AccelerationStructure::new(
             ctx.device.clone(),
             phobos::AccelerationStructureType::BottomLevel,
@@ -333,7 +359,7 @@ fn compact_blases(
         new_structures.push(new_as);
         new_entries.push(AllocatedAS {
             buffer: buffer_view,
-            scratch: entry.scratch.clone(),
+            scratch: entry.scratch,
             handle: new_structures.len() - 1,
         });
     }
@@ -391,6 +417,7 @@ fn get_build_info_sizes(
     prim_counts: &[u32],
 ) -> Vec<Result<phobos::AccelerationStructureBuildSize>> {
     let mut sizes: Vec<Result<phobos::AccelerationStructureBuildSize>> = Vec::new();
+    assert_eq!(prim_counts.len(), build_infos.len());
     for (index, build_info) in build_infos.iter().enumerate() {
         sizes.push(phobos::query_build_size(
             &ctx.device,
@@ -421,6 +448,7 @@ fn set_build_infos_sizes<'a>(
 ) -> Vec<Result<AccelerationStructureBuildInfo<'a>>> {
     let sizes = get_build_info_sizes(ctx, &build_infos, prim_counts);
     let mut out_build_infos: Vec<Result<AccelerationStructureBuildInfo>> = Vec::new();
+    assert_eq!(build_infos.len(), sizes.len());
     for (mut build_info, size) in build_infos.into_iter().zip(sizes.into_iter()) {
         match size {
             Err(e) => out_build_infos.push(Err(e)),
@@ -484,9 +512,13 @@ pub fn convert_scene_to_blas(
     ctx: &mut crate::app::Context,
     scene: &asset::Scene,
 ) -> SceneAccelerationStructure {
-    println!("Scene has total # of meshes: {}", scene.meshes.len());
+    println!(
+        "[acceleration_structure]: Scene has total # of meshes: {}",
+        scene.meshes.len()
+    );
+    let meshes_selected: Vec<Handle<asset::Mesh>> = scene.meshes.values().cloned().collect();
     let mut blas_build_infos: Vec<AccelerationStructureBuildInfo> =
-        get_blas_entries(&scene.meshes.values().cloned().collect(), scene)
+        get_blas_entries(&meshes_selected, scene)
             .into_iter()
             .filter_map(|x| {
                 if x.is_err() {
@@ -542,7 +574,6 @@ pub fn convert_scene_to_blas(
     let (as_resources, entries) = create_acceleration_structure(ctx, &blas_build_infos);
     let compact_sizes =
         build_blas(ctx, &as_resources, &entries, blas_build_infos).expect("Failed to build BLAS");
-    println!("Built BLAS");
     let (new_entries, new_as_resources) =
         compact_blases(ctx, &as_resources, &entries, compact_sizes);
     // Make TLAS
@@ -550,19 +581,26 @@ pub fn convert_scene_to_blas(
     //  TODO: REDO THIS UNHOLY MESS
     //  TODO: LEARN HOW TO CODE
 
-    let instance_buffer = make_instances_buffer(ctx, &as_resources, &new_entries)
+    // as_resources and entries should not be used beyond this point
+    assert_eq!(
+        new_entries.len(),
+        new_as_resources.acceleration_structures.len()
+    );
+    let instance_buffer = make_instances_buffer(ctx, &new_as_resources, &new_entries)
         .map_err(|e| println!("Could not make instance buffer: {}", e))
         .ok()
         .unwrap();
     let tlas_build_infos = get_tlas_build_infos(&instance_buffer, new_entries.len() as u32);
-    let mut tlas_build_infos = set_build_infos_sizes(ctx, vec![tlas_build_infos], &[1])
-        .into_iter()
-        .filter_map(|build_info| {
-            build_info
-                .map_err(|e| println!("Failed to make TLAS due to: {}", e))
-                .ok()
-        })
-        .collect::<Vec<AccelerationStructureBuildInfo>>();
+    let mut tlas_build_infos =
+        set_build_infos_sizes(ctx, vec![tlas_build_infos], &[new_entries.len() as u32])
+            .into_iter()
+            .filter_map(|build_info| {
+                build_info
+                    .map_err(|e| println!("Failed to make TLAS due to: {}", e))
+                    .ok()
+            })
+            .collect::<Vec<AccelerationStructureBuildInfo>>();
+    //assert_eq!(tlas_build_infos.len(), new_entries.len());
     tlas_build_infos = suballocate_build_infos(tlas_build_infos)
         .into_iter()
         .filter_map(|build_info| {
@@ -584,7 +622,7 @@ pub fn convert_scene_to_blas(
         )
         .scratch_data(tlas_resources.scratch.as_ref().unwrap().address());
 
-    println!("You should be tlas: {:?}", tlas_build_info.handle.ty());
+    // Submit tlas command
     let cmd = ctx
         .execution_manager
         .on_domain::<Compute>()
