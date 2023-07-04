@@ -93,7 +93,7 @@ fn get_blas_entries<'a>(
                     phobos::AccelerationStructureGeometryTrianglesData::default()
                         .format(vertex_buffer.format)
                         .vertex_data(vertex_buffer.buffer_view.address())
-                        .stride(vertex_buffer.component_size + vertex_buffer.stride)
+                        .stride(vertex_buffer.stride)
                         .max_vertex(vertex_buffer.count as u32)
                         .index_data(index_type, index_buffer.buffer_view.address())
                         .flags(
@@ -470,7 +470,7 @@ pub fn convert_scene_to_blas(
 ) -> SceneAccelerationStructure {
     println!("Scene has total # of meshes: {}", scene.meshes.len());
     let mut blas_build_infos: Vec<AccelerationStructureBuildInfo> =
-        get_blas_entries(&scene.meshes, scene)
+        get_blas_entries(&scene.meshes.values().cloned().collect(), scene)
             .into_iter()
             .filter_map(|x| {
                 if x.is_err() {

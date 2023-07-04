@@ -11,6 +11,7 @@ use gltf::accessor::DataType;
 use gltf::Semantic;
 use phobos::vk;
 use phobos::vk::Handle;
+use std::collections::HashMap;
 use std::path::Path;
 
 pub struct GltfAssetLoader {}
@@ -23,9 +24,9 @@ impl GltfAssetLoader {
     /// Loads any gltf asset given a file
     pub fn load_asset_from_file(&self, gltf_path: &Path, ctx: &mut app::Context) -> asset::Scene {
         let mut scene = asset::Scene {
-            meshes: Vec::new(),
-            buffers: Vec::new(),
-            attributes: Vec::new(),
+            meshes: HashMap::new(),
+            buffers: HashMap::new(),
+            attributes: HashMap::new(),
             meshes_storage: handle_storage::Storage::new(),
             buffer_storage: handle_storage::Storage::new(),
             attributes_storage: handle_storage::Storage::new(),
@@ -69,7 +70,9 @@ impl GltfAssetLoader {
 
             // Store buffer in scene
             let buffer_handle = scene.buffer_storage.insert(gpu_buffer);
-            scene.buffers.insert(gltf_buffer.index(), buffer_handle);
+            scene
+                .buffers
+                .insert(gltf_buffer.index() as u64, buffer_handle);
         }
 
         // Load accessors first then load meshes second
@@ -93,21 +96,25 @@ impl GltfAssetLoader {
                         // Create a buffer view
                         let accessor_viewer = &accessor.view().unwrap();
                         let total_offset = accessor_viewer.offset() + accessor.offset();
-                        let stride = accessor_viewer.stride().unwrap_or(0);
                         let component_size = accessor.size();
+                        let stride = accessor_viewer.stride().unwrap_or(0);
 
                         // https://github.com/KhronosGroup/glTF-Tutorials/blob/master/gltfTutorial/gltfTutorial_005_BuffersBufferViewsAccessors.md#buffers
-                        let buffer_size = if stride > 0 {
+                        let mut buffer_size = if stride > 0 {
                             stride * (accessor.count() - 1) + component_size
                         } else {
                             component_size * accessor.count()
                         };
+                        //buffer_size = accessor_viewer.length();
 
                         // Get buffer which is referenced and store attribute in scene
                         let buffer = scene
                             .buffer_storage
                             .get_immutable(
-                                scene.buffers.get(accessor_viewer.buffer().index()).unwrap(),
+                                scene
+                                    .buffers
+                                    .get(&(accessor_viewer.buffer().index() as u64))
+                                    .unwrap(),
                             )
                             .unwrap();
 
@@ -176,10 +183,11 @@ impl GltfAssetLoader {
                 // Indices
                 {
                     let accessor = gltf_primitive.indices().unwrap();
-                    if scene.attributes.get(accessor.index()).is_none() {
-                        scene
-                            .attributes
-                            .insert(accessor.index(), get_attribute_handle(accessor, None));
+                    if scene.attributes.get(&(accessor.index() as u64)).is_none() {
+                        scene.attributes.insert(
+                            accessor.index() as u64,
+                            get_attribute_handle(accessor, None),
+                        );
                     }
                 }
 
@@ -191,13 +199,13 @@ impl GltfAssetLoader {
                         | gltf::Semantic::Tangents => {
                             // Check if accessor exists already
                             let accessor = gltf_attribute.1;
-                            if scene.attributes.get(accessor.index()).is_some() {
+                            if scene.attributes.get(&(accessor.index() as u64)).is_some() {
                                 continue;
                             }
 
                             // Create an attribute handle
                             scene.attributes.insert(
-                                accessor.index(),
+                                accessor.index() as u64,
                                 get_attribute_handle(accessor, Some(gltf_attribute.0)),
                             );
                         }
@@ -216,9 +224,13 @@ impl GltfAssetLoader {
             );
             let asset_meshes = self.flatten_meshes(&scene, gltf_node, gltf_mat);
             for mesh in asset_meshes {
-                scene.meshes.push(scene.meshes_storage.insert(mesh));
+                println!("we are iterating!");
+                scene
+                    .meshes
+                    .insert(scene.meshes.len() as u64, scene.meshes_storage.insert(mesh));
             }
         }
+        println!("[gltf]: Scene has {} meshes", scene.meshes.len());
         scene
     }
 
@@ -242,10 +254,12 @@ impl GltfAssetLoader {
         if node.mesh().is_some() {
             let gltf_mesh = node.mesh().unwrap();
             // Mesh exists in node
-            meshes.append(&mut self.load_mesh(scene, gltf_mesh, transform.clone()));
+            println!("Mesh exists!");
+            meshes.append(&mut self.load_mesh(scene, gltf_mesh, transform));
+            println!("We are now size: {}", meshes.len());
         }
         for child_node in node.children() {
-            meshes.append(&mut self.flatten_meshes(scene, child_node, transform.clone()));
+            meshes.append(&mut self.flatten_meshes(scene, child_node, transform));
         }
         meshes
     }
@@ -280,14 +294,19 @@ impl GltfAssetLoader {
             if position_index < 0 || normal_index < 0 {
                 continue;
             }
-            let vertex_buffer = scene.attributes.get(position_index as usize);
-            let index_buffer = scene.attributes.get(index_index as usize);
+            let vertex_buffer = scene.attributes.get(&(position_index as u64));
+            let index_buffer = scene.attributes.get(&(index_index as u64));
             if vertex_buffer.is_some() && index_buffer.is_some() {
                 asset_meshes.push(asset::Mesh {
-                    vertex_buffer: vertex_buffer.unwrap().clone(),
-                    index_buffer: index_buffer.unwrap().clone(),
+                    vertex_buffer: *vertex_buffer.unwrap(),
+                    index_buffer: *index_buffer.unwrap(),
                     transform,
                 });
+            } else {
+                println!(
+                    "\"{}\" mesh does not have a valid index or vertex buffer",
+                    mesh.name().unwrap_or("Unnamed")
+                );
             }
         }
         asset_meshes
