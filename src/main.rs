@@ -22,7 +22,15 @@ struct Resources {
 struct Basic {
     resources: Resources,
     scene: Arc<RwLock<asset::Scene>>,
-    blas: Arc<graphics::acceleration_structure::AccelerationStructure>,
+    blas: Arc<graphics::acceleration_structure::SceneAccelerationStructure>,
+}
+
+/// Debugging purposes only: gets the gltf name from my folder
+fn gltf_sample_name(name: &str) -> String {
+    format!(
+        "C:/Users/Danny/Documents/glTF-Sample-Models/2.0/{0}/glTF/{0}.gltf",
+        name
+    )
 }
 
 impl app::App for Basic {
@@ -33,7 +41,10 @@ impl app::App for Basic {
         let loader = asset::gltf_asset_loader::GltfAssetLoader::new();
         let scene = loader.load_asset_from_file(
             std::path::Path::new(
-                "C:/Users/Danny/Documents/glTF-Sample-Models/2.0/Suzanne/glTF/Suzanne.gltf",
+                //gltf_sample_name("Suzanne").as_str(),
+                gltf_sample_name("Sponza").as_str(),
+                //"C:/Users/Danny/Documents/Assets/Junk Shop/Blender 2.gltf",
+                //"C:/Users/Danny/Documents/Assets/Classroom/classroom.gltf",
             ),
             &mut ctx,
         );
@@ -126,24 +137,6 @@ impl app::App for Basic {
                 data.as_slice(),
                 phobos::vk::BufferUsageFlags::VERTEX_BUFFER,
             )?,
-        };
-
-        // Debug naming
-        let buffer_name = std::ffi::CString::new("Test_naming").unwrap();
-        let name_info = phobos::prelude::vk::DebugUtilsObjectNameInfoEXT::builder()
-            .object_type(phobos::prelude::vk::ObjectType::BUFFER)
-            .object_handle(unsafe { resources.vertex_buffer.handle().as_raw() })
-            .object_name(&buffer_name)
-            .build();
-
-        println!("{} is buffer!", unsafe {
-            resources.vertex_buffer.handle().as_raw()
-        });
-
-        unsafe {
-            ctx.debug_utils
-                .set_debug_utils_object_name(ctx.device.handle().handle(), &name_info)
-                .expect("Failed to set object name!");
         };
 
         Ok(Self {

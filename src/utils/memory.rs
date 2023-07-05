@@ -6,7 +6,7 @@ use phobos::vk;
 
 /// Gets the total size that any given slice of data would take up
 pub fn get_size<T: Copy>(data: &[T]) -> u64 {
-    (data.len() * std::mem::size_of::<T>()) as u64
+    std::mem::size_of_val(data) as u64
 }
 
 /// Quick utility function to create transfer buffers mainly for input
@@ -57,14 +57,14 @@ pub fn vector_to_array<T: Clone + Copy, const N: usize>(v: Vec<T>) -> Option<[T;
     }
 }
 
-use std::ops::{Add, Div, Rem, Sub};
+use std::ops::{Add, Rem, Sub};
 
 /// Aligns any given size and alignment to the correct size accounting for alignment
 pub fn align_size<T: Add<Output = T> + Sub<Output = T> + Rem<Output = T> + Copy>(
     size: T,
     alignment: T,
 ) -> T {
-    return size + alignment - (size % alignment);
+    size + alignment - (size % alignment)
 }
 
 pub fn bytes_to_mib(size: f64) -> f64 {

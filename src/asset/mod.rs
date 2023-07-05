@@ -1,5 +1,6 @@
 pub mod gltf_asset_loader;
 
+use std::collections::HashMap;
 use crate::utils::handle_storage::{Handle, Storage};
 use std::sync::Arc;
 
@@ -40,7 +41,7 @@ pub struct Scene {
     pub buffer_storage: Storage<phobos::Buffer>,
     pub attributes_storage: Storage<AttributeView>,
 
-    pub buffers: Vec<Handle<phobos::Buffer>>,
-    pub meshes: Vec<Handle<Mesh>>,
-    pub attributes: Vec<Handle<AttributeView>>,
+    pub buffers: HashMap<u64, Handle<phobos::Buffer>>,
+    pub meshes: HashMap<u64, Handle<Mesh>>,
+    pub attributes: HashMap<u64, Handle<AttributeView>>,
 }
