@@ -1,7 +1,7 @@
 pub mod gltf_asset_loader;
 
-use std::collections::HashMap;
 use crate::utils::handle_storage::{Handle, Storage};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Similar to phobos' [`BufferView`], however it includes additional information about
@@ -29,8 +29,9 @@ pub struct AttributeView {
 /// [`handles`]
 ///
 /// [`handles`]: Handle
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Mesh {
+    pub name: Option<String>,
     pub vertex_buffer: Handle<AttributeView>,
     pub index_buffer: Handle<AttributeView>,
     pub transform: glam::Mat4,

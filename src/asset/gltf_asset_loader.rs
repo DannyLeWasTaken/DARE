@@ -302,6 +302,7 @@ impl GltfAssetLoader {
                     vertex_buffer: *vertex_buffer.unwrap(),
                     index_buffer: *index_buffer.unwrap(),
                     transform,
+                    name: Some(String::from(mesh.name().unwrap_or("Unnamed"))),
                 });
             } else {
                 println!(

@@ -26,7 +26,11 @@ pub struct AllocatedAS {
     /// [`phobos::AccelerationStructure`]: phobos::AccelerationStructure
     handle: usize,
 
+    /// Transformation of the mesh
     transformation: glam::Mat4,
+
+    /// Name of the acceleration structure
+    name: Option<String>,
 }
 
 /// Contains all the resources used by [`AllocatedAS`]
@@ -75,6 +79,8 @@ struct AccelerationStructureBuildInfo<'a> {
 
     /// Offset of this BLAS entry in the scratch buffer
     scratch_offset: u64,
+
+    name: Option<String>,
 }
 
 /// Gets the build information of the BLASes based off of the scene
@@ -85,14 +91,19 @@ struct AccelerationStructureBuildInfo<'a> {
 fn get_blas_entries<'a>(
     meshes: &Vec<Handle<asset::Mesh>>,
     scene: &asset::Scene,
-) -> Vec<Result<phobos::AccelerationStructureBuildInfo<'a>>> {
-    let mut build_infos: Vec<Result<phobos::AccelerationStructureBuildInfo<'a>>> =
-        Vec::with_capacity(meshes.len());
+) -> Vec<(
+    Result<phobos::AccelerationStructureBuildInfo<'a>>,
+    Option<String>,
+)> {
+    let mut build_infos: Vec<(
+        Result<phobos::AccelerationStructureBuildInfo<'a>>,
+        Option<String>,
+    )> = Vec::with_capacity(meshes.len());
 
     for mesh_handle in meshes {
         let mesh = scene.meshes_storage.get_immutable(mesh_handle);
         if mesh.is_none() {
-            build_infos.push(Err(anyhow::anyhow!("No mesh found")));
+            build_infos.push((Err(anyhow::anyhow!("No mesh found")), None));
             continue;
         }
         // Retrieve the mesh's vertex and index buffer
@@ -100,14 +111,17 @@ fn get_blas_entries<'a>(
         let vertex_buffer = scene.attributes_storage.get_immutable(&mesh.vertex_buffer);
         let index_buffer = scene.attributes_storage.get_immutable(&mesh.index_buffer);
         if vertex_buffer.is_none() || index_buffer.is_none() {
-            build_infos.push(Err(anyhow::anyhow!("No vertex or index buffer found")));
+            build_infos.push((
+                Err(anyhow::anyhow!("No vertex or index buffer found")),
+                None,
+            ));
             continue;
         }
         let vertex_buffer = vertex_buffer.unwrap();
         let index_buffer = index_buffer.unwrap();
         let index_type = types::convert_scalar_format_to_index(index_buffer.format);
         if index_type.is_none() {
-            build_infos.push(Err(anyhow::anyhow!("No index type found")));
+            build_infos.push((Err(anyhow::anyhow!("No index type found")), None));
             continue;
         }
 
@@ -123,27 +137,30 @@ fn get_blas_entries<'a>(
             vertex_buffer.stride > 0,
             "[acceleration_structure]: Given vertex buffer has a stride of zero"
         );
-        build_infos.push(Ok(
-            phobos::AccelerationStructureBuildInfo::new_build()
-                .flags(
-                    vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION
-                        | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
-                )
-                .set_type(phobos::AccelerationStructureType::BottomLevel)
-                .push_triangles(
-                    phobos::AccelerationStructureGeometryTrianglesData::default()
-                        .format(vertex_buffer.format)
-                        .vertex_data(vertex_buffer.buffer_view.address())
-                        .stride(vertex_buffer.stride)
-                        .max_vertex(vertex_buffer.count as u32)
-                        .index_data(index_type, index_buffer.buffer_view.address())
-                        .flags(
-                            vk::GeometryFlagsKHR::OPAQUE
-                                | vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION,
-                        ),
-                )
-                .push_range((index_buffer.count / 3) as u32, 0, 0, 0),
-            // first_vertex in push_range could be a concern thanks to first_index
+        build_infos.push((
+            Ok(
+                phobos::AccelerationStructureBuildInfo::new_build()
+                    .flags(
+                        vk::BuildAccelerationStructureFlagsKHR::ALLOW_COMPACTION
+                            | vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+                    )
+                    .set_type(phobos::AccelerationStructureType::BottomLevel)
+                    .push_triangles(
+                        phobos::AccelerationStructureGeometryTrianglesData::default()
+                            .format(vertex_buffer.format)
+                            .vertex_data(vertex_buffer.buffer_view.address())
+                            .stride(vertex_buffer.stride)
+                            .max_vertex(vertex_buffer.count as u32)
+                            .index_data(index_type, index_buffer.buffer_view.address())
+                            .flags(
+                                vk::GeometryFlagsKHR::OPAQUE
+                                    | vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION,
+                            ),
+                    )
+                    .push_range((index_buffer.count / 3) as u32, 0, 0, 0),
+                // first_vertex in push_range could be a concern thanks to first_index
+            ),
+            mesh.name.clone(),
         ));
     }
     build_infos
@@ -225,7 +242,14 @@ fn create_acceleration_structure(
         }
         let acceleration_structure = acceleration_structure.unwrap();
         ctx.device
-            .set_name(&acceleration_structure, "Acceleration structure")
+            .set_name(
+                &acceleration_structure,
+                build_info
+                    .name
+                    .as_ref()
+                    .unwrap_or(&String::from("Unnamed"))
+                    .as_str(),
+            )
             .unwrap();
         instances.push(acceleration_structure);
         let entry = AllocatedAS {
@@ -233,6 +257,7 @@ fn create_acceleration_structure(
             scratch: scratch_view,
             handle: instances.len() - 1,
             transformation: glam::Mat4::IDENTITY,
+            name: build_info.name.clone(),
         };
         entries.push(entry);
     }
@@ -398,12 +423,23 @@ fn compact_blases(
             .finish()
             .unwrap();
         ctx.execution_manager.submit(cmd).unwrap().wait().unwrap();
+        ctx.device
+            .set_name(
+                &new_as,
+                entry
+                    .name
+                    .as_ref()
+                    .unwrap_or(&String::from("Unnamed"))
+                    .as_str(),
+            )
+            .unwrap();
         new_structures.push(new_as);
         new_entries.push(AllocatedAS {
             buffer: buffer_view,
             scratch: entry.scratch,
             handle: new_structures.len() - 1,
             transformation: glam::Mat4::IDENTITY,
+            name: entry.name.clone(),
         });
     }
     (
@@ -561,6 +597,7 @@ fn get_tlas_build_infos<'a>(
             size_info: None,
             buffer_offset: 0,
             scratch_offset: 0,
+            name: Some(String::from("TLAS")),
         });
     }
     out_vec
@@ -580,13 +617,14 @@ pub fn create_blas_from_scene(
     let mut blas_build_infos: Vec<AccelerationStructureBuildInfo> =
         get_blas_entries(&meshes_selected, scene)
             .into_iter()
-            .filter_map(|x| {
+            .filter_map(|(x, name)| {
                 if let Ok(x) = x {
                     Some(AccelerationStructureBuildInfo {
                         handle: x,
                         size_info: None,
                         buffer_offset: 0,
                         scratch_offset: 0,
+                        name,
                     })
                 } else {
                     println!("[acceleration_structure]: Failed to load mesh properly");
