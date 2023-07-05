@@ -12,29 +12,53 @@ use anyhow::Result;
 use phobos::domain::Compute;
 use phobos::{vk, ComputeCmdBuffer, IncompleteCmdBuffer};
 
+/// Represents the stored acceleration structure
 pub struct AllocatedAS {
+    /// Location of the acceleration structure in the buffer
     buffer: phobos::BufferView,
+
+    /// The scratch buffer
     scratch: phobos::BufferView,
+
+    /// The index in the [`AccelerationStructureResources`] which the [`phobos::AccelerationStructure`] is held
+    ///
+    /// [`AccelerationStructureResources`]: AccelerationStructureResources
+    /// [`phobos::AccelerationStructure`]: phobos::AccelerationStructure
     handle: usize,
 }
 
+/// Contains all the resources used by [`AllocatedAS`]
+///
+/// [`AllocatedAS`]: AllocatedAS
 pub struct AccelerationStructureResources {
+    /// The buffer which acceleration structures are stored in
     buffer: Option<phobos::Buffer>,
+
+    /// The scratch buffer
     scratch: Option<phobos::Buffer>,
+
+    /// Contains all the acceleration structures
     acceleration_structures: Vec<phobos::AccelerationStructure>,
 }
 
+/// Contains both the [`AllocatedAS`] and the [`AccelerationStructureResources`] to represent all
+/// the acceleration structures and their respective resources
+///
+/// [`AllocatedAS`]: AllocatedAS
+/// [`AccelerationStructureResources`]: AccelerationStructureResources
 pub struct AccelerationStructure {
     resources: AccelerationStructureResources,
     instances: Vec<AllocatedAS>,
 }
 
+/// All the acceleration structures used in a scene
 pub struct SceneAccelerationStructure {
     tlas: AccelerationStructure,
     blas: AccelerationStructure,
     instances: phobos::Buffer,
 }
 
+/// Contains additional information to build acceleration structures
 struct AccelerationStructureBuildInfo<'a> {
     // phobos::AccelerationStructureBuildInfo covers:
     // AccelerationStructureBuildGeometryInfoKHR
@@ -52,14 +76,16 @@ struct AccelerationStructureBuildInfo<'a> {
 }
 
 /// Gets the build information of the BLASes based off of the scene
+/// # Errors
+/// This function will panic if:
+/// * The given mesh is not a triangle such as not having indices which are divisible by 3
+/// * Mesh stride is zero
 fn get_blas_entries<'a>(
     meshes: &Vec<Handle<asset::Mesh>>,
     scene: &asset::Scene,
 ) -> Vec<Result<phobos::AccelerationStructureBuildInfo<'a>>> {
     let mut build_infos: Vec<Result<phobos::AccelerationStructureBuildInfo<'a>>> =
         Vec::with_capacity(meshes.len());
-
-    let mut total_primitive_count = 0;
 
     for mesh_handle in meshes {
         let mesh = scene.meshes_storage.get_immutable(mesh_handle);
@@ -86,12 +112,15 @@ fn get_blas_entries<'a>(
         // Create the build information for the mesh
         let index_type = index_type.unwrap();
         // Check if the number of indices can make a triangle
-        assert_eq!((index_buffer.count % 3), 0);
+        assert_eq!(
+            (index_buffer.count % 3),
+            0,
+            "[acceleration_structure]: # of indices in the mesh exceeds 3000."
+        );
         assert!(
             vertex_buffer.stride > 0,
-            "[BLAS]: Given vertex buffer has a stride of zero"
+            "[acceleration_structure]: Given vertex buffer has a stride of zero"
         );
-        total_primitive_count += index_buffer.count / 3;
         build_infos.push(Ok(
             phobos::AccelerationStructureBuildInfo::new_build()
                 .flags(
@@ -221,7 +250,8 @@ fn build_blas(
     acceleration_structures_resource: &AccelerationStructureResources,
     entries: &[AllocatedAS],
     build_infos: Vec<AccelerationStructureBuildInfo>,
-) -> Result<Vec<u64>> {
+    compact_blas: bool,
+) -> Result<Option<Vec<u64>>> {
     // Make sure we have the right amounts
     assert_eq!(build_infos.len(), entries.len());
     assert_eq!(
@@ -255,14 +285,6 @@ fn build_blas(
         })
         .collect::<Vec<phobos::AccelerationStructureBuildInfo>>();
 
-    let mut query_pool = phobos::QueryPool::<phobos::AccelerationStructureCompactedSizeQuery>::new(
-        ctx.device.clone(),
-        phobos::QueryPoolCreateInfo {
-            count: build_infos.len() as u32,
-            statistic_flags: None,
-        },
-    )?;
-
     let mut command = ctx
         .execution_manager
         .on_domain::<Compute>()?
@@ -272,18 +294,42 @@ fn build_blas(
             vk::AccessFlags2::ACCELERATION_STRUCTURE_WRITE_KHR,
             phobos::PipelineStage::ALL_COMMANDS,
             vk::AccessFlags2::ACCELERATION_STRUCTURE_READ_KHR,
-        )
-        .write_acceleration_structures_properties(
+        );
+
+    let mut query_pool: Option<phobos::QueryPool<phobos::AccelerationStructureCompactedSizeQuery>> =
+        None;
+
+    // Optional compaction
+    if compact_blas {
+        query_pool = Some(phobos::QueryPool::<
+            phobos::AccelerationStructureCompactedSizeQuery,
+        >::new(
+            ctx.device.clone(),
+            phobos::QueryPoolCreateInfo {
+                count: build_infos.len() as u32,
+                statistic_flags: None,
+            },
+        )?);
+        command = command.write_acceleration_structures_properties(
             acceleration_structures_resource
                 .acceleration_structures
                 .as_slice(),
-            &mut query_pool,
-        )?
-        .finish()?;
+            query_pool.as_mut().unwrap(),
+        )?;
+    }
+    // Indicate command submission is finished
+    let command = command.finish()?;
 
     ctx.execution_manager.submit(command)?.wait()?;
 
-    query_pool.wait_for_all_results()
+    if let Some(mut query_pool) = query_pool {
+        match query_pool.wait_for_all_results() {
+            Ok(query_pool) => Ok(Some(query_pool)),
+            Err(e) => Err(e),
+        }
+    } else {
+        Ok(None)
+    }
 }
 
 /// Create the final compacted acceleration structures
@@ -319,13 +365,6 @@ fn compact_blases(
         let buffer_view: phobos::BufferView = compacted_buffer
             .view(as_buffer_offset, *compacted_sizes.get(index).unwrap())
             .unwrap();
-        /**
-        println!(
-            "Size before compactation: {}. Size after: {}",
-            entry.buffer.size(),
-            buffer_view.size()
-        );
-        **/
         let new_as = phobos::AccelerationStructure::new(
             ctx.device.clone(),
             phobos::AccelerationStructureType::BottomLevel,
@@ -487,25 +526,225 @@ fn suballocate_build_infos(
     out_build_infos
 }
 
-// Gets all the build information for the related TLAS
+/// Gets all the [`AccelerationStructureBuildInfo`] for the related TLAS
+/// # Errors
+/// This function will panic if:
+/// * Number of `instances_buffers` is not the same as the number of `instance_counts`
+///
+/// [`AccelerationStructureBuildInfo`]: AccelerationStructureBuildInfo
 fn get_tlas_build_infos<'a>(
-    instances: &phobos::Buffer,
-    instance_count: u32,
-) -> AccelerationStructureBuildInfo<'a> {
-    AccelerationStructureBuildInfo {
-        handle: phobos::AccelerationStructureBuildInfo::new_build()
-            .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
-            .set_type(phobos::AccelerationStructureType::TopLevel)
-            .push_instances(phobos::AccelerationStructureGeometryInstancesData {
-                data: instances.address().into(),
-                flags: vk::GeometryFlagsKHR::OPAQUE
-                    | vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION,
-            })
-            .push_range(instance_count, 0, 0, 0),
-        size_info: None,
-        buffer_offset: 0,
-        scratch_offset: 0,
+    instance_buffers: &[&phobos::Buffer],
+    instance_counts: &[u32],
+) -> Vec<AccelerationStructureBuildInfo<'a>> {
+    let mut out_vec: Vec<AccelerationStructureBuildInfo> =
+        Vec::with_capacity(instance_buffers.len());
+    assert_eq!(
+        instance_buffers.len(),
+        instance_counts.len(),
+        "[acceleration_structure]: Given instances count must be the same as number of instances"
+    );
+    for (instance_buffer, instance_count) in instance_buffers.iter().zip(instance_counts) {
+        out_vec.push(AccelerationStructureBuildInfo {
+            handle: phobos::AccelerationStructureBuildInfo::new_build()
+                .flags(vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE)
+                .set_type(phobos::AccelerationStructureType::TopLevel)
+                .push_instances(phobos::AccelerationStructureGeometryInstancesData {
+                    data: instance_buffer.address().into(),
+                    flags: vk::GeometryFlagsKHR::OPAQUE
+                        | vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION,
+                })
+                .push_range(*instance_count, 0, 0, 0),
+            size_info: None,
+            buffer_offset: 0,
+            scratch_offset: 0,
+        });
     }
+    out_vec
+}
+
+/// Gets the [`AccelerationStructure`] from the passed in [`asset::Scene`]
+///
+/// [`AccelerationStructure`]: AccelerationStructure
+/// [`asset::Scene`]: asset::Scene
+pub fn create_blas_from_scene(
+    ctx: &mut crate::app::Context,
+    scene: &asset::Scene,
+    do_compaction: bool,
+) -> AccelerationStructure {
+    // Get build information from the scene
+    let meshes_selected: Vec<Handle<asset::Mesh>> = scene.meshes.values().cloned().collect();
+    let mut blas_build_infos: Vec<AccelerationStructureBuildInfo> =
+        get_blas_entries(&meshes_selected, scene)
+            .into_iter()
+            .filter_map(|x| {
+                if let Ok(x) = x {
+                    Some(AccelerationStructureBuildInfo {
+                        handle: x,
+                        size_info: None,
+                        buffer_offset: 0,
+                        scratch_offset: 0,
+                    })
+                } else {
+                    println!("[acceleration_structure]: Failed to load mesh properly");
+                    None
+                }
+            })
+            .collect();
+    // Fill the remaining information left over
+
+    // Collect all primitive counts for later usage
+    let primitive_counts: Vec<u32> = blas_build_infos
+        .iter()
+        .map(|build_info| {
+            build_info
+                .handle
+                .as_vulkan()
+                .1
+                .get(0)
+                .unwrap()
+                .primitive_count
+        })
+        .collect::<Vec<u32>>();
+
+    // Fill in size_info about the build
+    blas_build_infos = set_build_infos_sizes(ctx, blas_build_infos, primitive_counts.as_slice())
+        .into_iter()
+        .filter_map(|build_info| {
+            build_info
+                .map_err(|e| println!("Failed to bind size_info due to: {}", e))
+                .ok()
+        })
+        .collect::<Vec<AccelerationStructureBuildInfo>>();
+    // Suballocate the BLAS with known pre-compact sizes
+    blas_build_infos = suballocate_build_infos(blas_build_infos)
+        .into_iter()
+        .filter_map(|build_info| {
+            build_info
+                .map_err(|e| {
+                    println!(
+                        "[acceleration_structure]: Couldn't suballocate AS due to: {}",
+                        e
+                    )
+                })
+                .ok()
+        })
+        .collect::<Vec<AccelerationStructureBuildInfo>>();
+
+    // Creates the acceleration structures
+    let (mut as_resources, mut allocated_structures) =
+        create_acceleration_structure(ctx, &blas_build_infos);
+    // Builds BLAS with compact
+    let compact_sizes = build_blas(
+        ctx,
+        &as_resources,
+        &allocated_structures,
+        blas_build_infos,
+        do_compaction,
+    )
+    .expect("[acceleration_structure]: Failed to build BLAS");
+
+    if do_compaction {
+        // Override existing BLAS with compacted BLAS
+        let compact_sizes = compact_sizes
+            .expect("[acceleration_structure]: Expected sizes from compaction, found None");
+        let (new_allocated_structures, new_as_resources) =
+            compact_blases(ctx, &as_resources, &allocated_structures, compact_sizes);
+        return AccelerationStructure {
+            resources: new_as_resources,
+            instances: new_allocated_structures,
+        };
+    }
+    AccelerationStructure {
+        resources: as_resources,
+        instances: allocated_structures,
+    }
+}
+
+/// Creates a top level acceleration structure based off of the given blas passed in
+/// # Errors
+/// This function will return an error if:
+/// * Command buffer submission failed
+/// This function will panic if:
+/// * The number of BLAS [`AllocatedAS`] is not the same as the number of instances
+pub fn create_tlas(
+    ctx: &mut crate::app::Context,
+    blas: &AccelerationStructure,
+) -> Result<(AccelerationStructure, phobos::Buffer)> {
+    assert_eq!(
+        blas.resources.acceleration_structures.len(),
+        blas.instances.len(),
+        "BLAS stored structures is not the same size that the number of instances"
+    );
+    let instance_buffer = make_instances_buffer(ctx, &blas.resources, &blas.instances)
+        .map_err(|e| {
+            println!(
+                "[acceleration_structure]: Couldn't make instance buffer for TLAS: {}",
+                e
+            )
+        })
+        .ok()
+        .unwrap();
+    // Get TLAS build information
+    let mut tlas_build_infos =
+        get_tlas_build_infos(&[&instance_buffer], &[blas.instances.len() as u32]);
+    tlas_build_infos = set_build_infos_sizes(ctx, tlas_build_infos, &[blas.instances.len() as u32])
+        .into_iter()
+        .filter_map(|build_info| {
+            build_info
+                .map_err(|e| {
+                    println!(
+                        "[acceleration_structure]: Failed to make TLAS due to: {}",
+                        e
+                    )
+                })
+                .ok()
+        })
+        .collect::<Vec<AccelerationStructureBuildInfo>>();
+    // suballocate build information (pretty useless, but just in case)
+    tlas_build_infos = suballocate_build_infos(tlas_build_infos)
+        .into_iter()
+        .filter_map(|build_info| {
+            build_info
+                .map_err(|e| println!("[acceleration_structure]: Failed to make TLAS: {}", e))
+                .ok()
+        })
+        .collect::<Vec<AccelerationStructureBuildInfo>>();
+
+    let (as_resources, allocated_structures) =
+        create_acceleration_structure(ctx, &tlas_build_infos);
+    // Assign the as and scratch address
+    let mut tlas_build_info: AccelerationStructureBuildInfo = tlas_build_infos.remove(0);
+    tlas_build_info.handle = tlas_build_info
+        .handle
+        .dst(
+            as_resources
+                .acceleration_structures
+                .get(allocated_structures.first().unwrap().handle)
+                .unwrap(),
+        )
+        .scratch_data(as_resources.scratch.as_ref().unwrap().address());
+
+    // Submit tlas commands
+    let command = ctx
+        .execution_manager
+        .on_domain::<Compute>()
+        .unwrap()
+        .memory_barrier(
+            phobos::PipelineStage::ALL_COMMANDS,
+            vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
+            phobos::PipelineStage::ALL_COMMANDS,
+            vk::AccessFlags2::MEMORY_READ,
+        )
+        .build_acceleration_structure(&tlas_build_info.handle)?
+        .finish()?;
+    ctx.execution_manager.submit(command)?.wait()?;
+    Ok((
+        AccelerationStructure {
+            resources: as_resources,
+            instances: allocated_structures,
+        },
+        instance_buffer,
+    ))
 }
 
 pub fn convert_scene_to_blas(
@@ -516,139 +755,15 @@ pub fn convert_scene_to_blas(
         "[acceleration_structure]: Scene has total # of meshes: {}",
         scene.meshes.len()
     );
-    let meshes_selected: Vec<Handle<asset::Mesh>> = scene.meshes.values().cloned().collect();
-    let mut blas_build_infos: Vec<AccelerationStructureBuildInfo> =
-        get_blas_entries(&meshes_selected, scene)
-            .into_iter()
-            .filter_map(|x| {
-                if x.is_err() {
-                    println!(
-                        "A mesh failed to load properly due to error {}!",
-                        x.err().unwrap()
-                    );
-                    None
-                } else {
-                    Some(AccelerationStructureBuildInfo {
-                        handle: x.unwrap(),
-                        size_info: None,
-                        buffer_offset: 0,
-                        scratch_offset: 0,
-                    })
-                }
-            })
-            .collect();
-
-    //let blas_build_infos: Vec<Result<AccelerationStructureBuildInfo>>;
-    {
-        let primitive_counts: Vec<u32> = blas_build_infos
-            .iter()
-            .map(|build_info| {
-                build_info
-                    .handle
-                    .as_vulkan()
-                    .1
-                    .get(0)
-                    .unwrap()
-                    .primitive_count
-            })
-            .collect::<Vec<u32>>();
-        blas_build_infos =
-            set_build_infos_sizes(ctx, blas_build_infos, primitive_counts.as_slice())
-                .into_iter()
-                .filter_map(|build_info| {
-                    build_info
-                        .map_err(|e| println!("Failed to bind size_info due to: {}", e))
-                        .ok()
-                })
-                .collect::<Vec<AccelerationStructureBuildInfo>>();
-        // Suballocate it
-        blas_build_infos = suballocate_build_infos(blas_build_infos)
-            .into_iter()
-            .filter_map(|build_info| {
-                build_info
-                    .map_err(|e| println!("Couldn't suballocate AS due to: {}", e))
-                    .ok()
-            })
-            .collect::<Vec<AccelerationStructureBuildInfo>>();
-    }
-    let (as_resources, entries) = create_acceleration_structure(ctx, &blas_build_infos);
-    let compact_sizes =
-        build_blas(ctx, &as_resources, &entries, blas_build_infos).expect("Failed to build BLAS");
-    let (new_entries, new_as_resources) =
-        compact_blases(ctx, &as_resources, &entries, compact_sizes);
-    // Make TLAS
-
-    //  TODO: REDO THIS UNHOLY MESS
-    //  TODO: LEARN HOW TO CODE
-
-    // as_resources and entries should not be used beyond this point
-    assert_eq!(
-        new_entries.len(),
-        new_as_resources.acceleration_structures.len()
-    );
-    let instance_buffer = make_instances_buffer(ctx, &new_as_resources, &new_entries)
-        .map_err(|e| println!("Could not make instance buffer: {}", e))
-        .ok()
-        .unwrap();
-    let tlas_build_infos = get_tlas_build_infos(&instance_buffer, new_entries.len() as u32);
-    let mut tlas_build_infos =
-        set_build_infos_sizes(ctx, vec![tlas_build_infos], &[new_entries.len() as u32])
-            .into_iter()
-            .filter_map(|build_info| {
-                build_info
-                    .map_err(|e| println!("Failed to make TLAS due to: {}", e))
-                    .ok()
-            })
-            .collect::<Vec<AccelerationStructureBuildInfo>>();
-    //assert_eq!(tlas_build_infos.len(), new_entries.len());
-    tlas_build_infos = suballocate_build_infos(tlas_build_infos)
-        .into_iter()
-        .filter_map(|build_info| {
-            build_info
-                .map_err(|e| println!("Unable suballocate TLAS due to: {}", e))
-                .ok()
-        })
-        .collect::<Vec<AccelerationStructureBuildInfo>>();
-
-    let (tlas_resources, tlas_entries) = create_acceleration_structure(ctx, &tlas_build_infos);
-    let mut tlas_build_info = tlas_build_infos.remove(0);
-    tlas_build_info.handle = tlas_build_info
-        .handle
-        .dst(
-            tlas_resources
-                .acceleration_structures
-                .get(tlas_entries.get(0).unwrap().handle)
-                .unwrap(),
-        )
-        .scratch_data(tlas_resources.scratch.as_ref().unwrap().address());
-
-    // Submit tlas command
-    let cmd = ctx
-        .execution_manager
-        .on_domain::<Compute>()
-        .unwrap()
-        .memory_barrier(
-            phobos::PipelineStage::ALL_COMMANDS,
-            vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
-            phobos::PipelineStage::ALL_COMMANDS,
-            vk::AccessFlags2::MEMORY_READ,
-        )
-        .build_acceleration_structure(&tlas_build_info.handle)
-        .unwrap()
-        .finish()
-        .unwrap();
-    ctx.execution_manager.submit(cmd).unwrap().wait().unwrap();
+    let do_compaction: bool = true; // Whether or not to do compaction
+    let blas: AccelerationStructure = create_blas_from_scene(ctx, scene, do_compaction);
+    let (tlas, tlas_instance_buffer): (AccelerationStructure, phobos::Buffer) =
+        create_tlas(ctx, &blas).expect("Failed to build TLAS");
 
     SceneAccelerationStructure {
-        tlas: AccelerationStructure {
-            resources: tlas_resources,
-            instances: tlas_entries,
-        },
-        blas: AccelerationStructure {
-            resources: new_as_resources,
-            instances: new_entries,
-        },
-        instances: instance_buffer,
+        tlas,
+        blas,
+        instances: tlas_instance_buffer,
     }
 }
 
