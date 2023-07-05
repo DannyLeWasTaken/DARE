@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use phobos::vk;
+use phobos::{vk, IncompleteCmdBuffer, TransferCmdBuffer};
 
 /// Gets the total size that any given slice of data would take up
 pub fn get_size<T: Copy>(data: &[T]) -> u64 {
@@ -45,6 +45,29 @@ pub fn make_transfer_buffer<T: Copy>(
         .copy_from_slice(data);
     ctx.device.set_name(&buffer, name)?;
     Ok(buffer)
+}
+
+/// Copies any buffer to the GPU buffer
+pub fn copy_buffer_to_gpu_buffer(
+    ctx: &mut crate::app::Context,
+    in_buffer: phobos::Buffer,
+    usage_flags: Option<vk::BufferUsageFlags>,
+    name: &str,
+) -> Result<phobos::Buffer> {
+    // Create a new buffer that is on the gpu only
+    let gpu_buffer = phobos::Buffer::new_device_local(
+        ctx.device.clone(),
+        &mut ctx.allocator,
+        in_buffer.size(),
+        usage_flags.unwrap_or(vk::BufferUsageFlags::TRANSFER_DST),
+    )?;
+
+    ctx.execution_manager
+        .on_domain::<phobos::domain::Compute>()?
+        .copy_buffer(&in_buffer.view_full(), &gpu_buffer.view_full())?
+        .finish()?;
+
+    todo!()
 }
 
 pub fn vector_to_array<T: Clone + Copy, const N: usize>(v: Vec<T>) -> Option<[T; N]> {

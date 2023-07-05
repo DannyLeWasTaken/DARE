@@ -37,12 +37,20 @@ pub struct Mesh {
     pub transform: glam::Mat4,
 }
 
+/// Abstraction for the images in file systems
+pub struct Image {
+    //format: phobos::
+}
+
 pub struct Scene {
     pub meshes_storage: Storage<Mesh>,
     pub buffer_storage: Storage<phobos::Buffer>,
     pub attributes_storage: Storage<AttributeView>,
+    pub image_storage: Storage<phobos::Image>,
 
     pub buffers: HashMap<u64, Handle<phobos::Buffer>>,
+    pub images: HashMap<u64, Handle<phobos::Image>>,
+    pub image_buffers: HashMap<u64, Handle<phobos::Buffer>>,
     pub meshes: HashMap<u64, Handle<Mesh>>,
     pub attributes: HashMap<u64, Handle<AttributeView>>,
 }

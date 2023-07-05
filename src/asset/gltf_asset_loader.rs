@@ -5,14 +5,17 @@
 use crate::app;
 use crate::asset;
 use crate::utils::handle_storage;
+use crate::utils::handle_storage::Storage;
+use crate::utils::memory;
 use anyhow;
 use anyhow::Result;
 use gltf::accessor::DataType;
 use gltf::Semantic;
-use phobos::vk;
 use phobos::vk::Handle;
+use phobos::{vk, IncompleteCmdBuffer, TransferCmdBuffer};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 pub struct GltfAssetLoader {}
 
@@ -26,10 +29,15 @@ impl GltfAssetLoader {
         let mut scene = asset::Scene {
             meshes: HashMap::new(),
             buffers: HashMap::new(),
+            image_buffers: HashMap::new(),
+
+            images: HashMap::new(),
             attributes: HashMap::new(),
-            meshes_storage: handle_storage::Storage::new(),
-            buffer_storage: handle_storage::Storage::new(),
-            attributes_storage: handle_storage::Storage::new(),
+
+            meshes_storage: Storage::new(),
+            buffer_storage: Storage::new(),
+            attributes_storage: Storage::new(),
+            image_storage: Storage::new(),
         };
         let gltf = gltf::Gltf::open(gltf_path).unwrap();
         let (document, buffers, images) = gltf::import(gltf_path).unwrap();
@@ -67,6 +75,81 @@ impl GltfAssetLoader {
             scene
                 .buffers
                 .insert(gltf_buffer.index() as u64, buffer_handle);
+        }
+
+        {
+            let temp_exec_manager = ctx.execution_manager.clone();
+            let mut image_commands = temp_exec_manager
+                .on_domain::<phobos::domain::Compute>()
+                .unwrap();
+            let mut transfer_images: Vec<(phobos::Buffer, Arc<phobos::Image>)> = Vec::new();
+
+            // Load images
+            for gltf_image in document.images() {
+                let image = images.get(gltf_image.index()).unwrap();
+                let image_data = image.pixels.as_slice();
+                let image_phobos = phobos::image::Image::new(
+                    ctx.device.clone(),
+                    &mut ctx.allocator,
+                    image.width,
+                    image.height,
+                    vk::ImageUsageFlags::TRANSFER_DST,
+                    get_image_type_rgba(image.format),
+                    vk::SampleCountFlags::TYPE_1,
+                )
+                .unwrap();
+                let image_data = convert_image_types_to_rgba(image.format, image_data);
+
+                // Store the image on GPU memory
+                let staging_buffer = memory::make_transfer_buffer(
+                    ctx,
+                    image_data.as_slice(),
+                    vk::BufferUsageFlags::TRANSFER_SRC,
+                    None,
+                    gltf_image.name().unwrap_or(
+                        format!("Unnamed image buffer {:?}", image_phobos.format()).as_str(),
+                    ),
+                )
+                .unwrap();
+                ctx.device
+                    .set_name(&image_phobos, gltf_image.name().unwrap_or("Unnamed Image"))
+                    .expect("TODO: panic message");
+
+                println!("[gltf]: New image!");
+                println!(
+                    "Image format: {:?} {:?}",
+                    image_phobos.format(),
+                    image.format
+                );
+
+                let image_phobos_handle = scene.image_storage.insert(image_phobos);
+                scene
+                    .images
+                    .insert(gltf_image.index() as u64, image_phobos_handle.clone());
+
+                transfer_images.push((
+                    staging_buffer,
+                    scene
+                        .image_storage
+                        .get_immutable(&image_phobos_handle)
+                        .unwrap(),
+                ))
+            }
+
+            for (staging_buffer, image) in transfer_images {
+                image_commands = image_commands
+                    .copy_buffer_to_image(
+                        &staging_buffer.view_full(),
+                        &image.view(vk::ImageAspectFlags::COLOR).unwrap(),
+                    )
+                    .unwrap();
+            }
+
+            ctx.execution_manager
+                .submit(image_commands.finish().unwrap())
+                .unwrap()
+                .wait()
+                .unwrap();
         }
 
         // Load accessors first then load meshes second
@@ -313,4 +396,64 @@ impl GltfAssetLoader {
         }
         asset_meshes
     }
+}
+
+/// Converts the image type from gltf to Vulkan format
+fn get_image_type_rgba(in_format: gltf::image::Format) -> vk::Format {
+    match in_format {
+        gltf::image::Format::R8
+        | gltf::image::Format::R8G8
+        | gltf::image::Format::R8G8B8
+        | gltf::image::Format::R8G8B8A8 => vk::Format::R8G8B8A8_SRGB,
+        gltf::image::Format::R16
+        | gltf::image::Format::R16G16
+        | gltf::image::Format::R16G16B16
+        | gltf::image::Format::R16G16B16A16 => vk::Format::R16G16B16A16_UINT,
+        gltf::image::Format::R32G32B32FLOAT => vk::Format::R32G32B32A32_UINT,
+        gltf::image::Format::R32G32B32A32FLOAT => vk::Format::R32G32B32A32_SFLOAT,
+    }
+}
+
+/// Converts all incoming image types to texels
+fn convert_image_types_to_rgba(convert_from_format: gltf::image::Format, data: &[u8]) -> Vec<u8> {
+    use gltf::image::Format;
+    let (component_size, component_count) = match convert_from_format {
+        Format::R8 => (1, 1),
+        Format::R8G8 => (1, 2),
+        Format::R8G8B8 => (1, 3),
+        Format::R8G8B8A8 => (1, 4),
+        Format::R16 => (2, 1),
+        Format::R16G16 => (2, 2),
+        Format::R16G16B16 => (2, 3),
+        Format::R16G16B16A16 => (2, 4),
+        Format::R32G32B32FLOAT => (4, 3),
+        Format::R32G32B32A32FLOAT => (4, 4),
+    };
+    // Data is already in rgba
+    if component_size == 4 {
+        return data.to_vec();
+    }
+
+    // Split up the data into chunks, slice into it by the component size:
+    // If component does not exist, default to zero expect for the alpha channel
+    data.chunks(component_size * component_count)
+        .flat_map(|p| {
+            vec![
+                p.get(0..component_size).unwrap_or(&[0]).to_vec(),
+                p.get((component_size)..(2 * component_size))
+                    .unwrap_or(&[0])
+                    .to_vec(),
+                p.get((component_size * 2)..(3 * component_size))
+                    .unwrap_or(&[0])
+                    .to_vec(),
+                match component_size {
+                    2 => (u16::MAX).to_be_bytes().to_vec(),
+                    4 => (f32::MAX).to_be_bytes().to_vec(),
+                    _ => vec![u8::MAX],
+                },
+            ]
+            .into_iter()
+            .flatten()
+        })
+        .collect::<Vec<u8>>()
 }
