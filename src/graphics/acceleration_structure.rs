@@ -25,6 +25,8 @@ pub struct AllocatedAS {
     /// [`AccelerationStructureResources`]: AccelerationStructureResources
     /// [`phobos::AccelerationStructure`]: phobos::AccelerationStructure
     handle: usize,
+
+    transformation: glam::Mat4,
 }
 
 /// Contains all the resources used by [`AllocatedAS`]
@@ -32,13 +34,13 @@ pub struct AllocatedAS {
 /// [`AllocatedAS`]: AllocatedAS
 pub struct AccelerationStructureResources {
     /// The buffer which acceleration structures are stored in
-    buffer: Option<phobos::Buffer>,
+    pub(crate) buffer: Option<phobos::Buffer>,
 
     /// The scratch buffer
-    scratch: Option<phobos::Buffer>,
+    pub(crate) scratch: Option<phobos::Buffer>,
 
     /// Contains all the acceleration structures
-    acceleration_structures: Vec<phobos::AccelerationStructure>,
+    pub(crate) acceleration_structures: Vec<phobos::AccelerationStructure>,
 }
 
 /// Contains both the [`AllocatedAS`] and the [`AccelerationStructureResources`] to represent all
@@ -47,15 +49,15 @@ pub struct AccelerationStructureResources {
 /// [`AllocatedAS`]: AllocatedAS
 /// [`AccelerationStructureResources`]: AccelerationStructureResources
 pub struct AccelerationStructure {
-    resources: AccelerationStructureResources,
-    instances: Vec<AllocatedAS>,
+    pub(crate) resources: AccelerationStructureResources,
+    pub(crate) instances: Vec<AllocatedAS>,
 }
 
 /// All the acceleration structures used in a scene
 pub struct SceneAccelerationStructure {
-    tlas: AccelerationStructure,
-    blas: AccelerationStructure,
-    instances: phobos::Buffer,
+    pub(crate) tlas: AccelerationStructure,
+    pub(crate) blas: AccelerationStructure,
+    pub(crate) instances: phobos::Buffer,
 }
 
 /// Contains additional information to build acceleration structures
@@ -230,6 +232,7 @@ fn create_acceleration_structure(
             buffer: buffer_view,
             scratch: scratch_view,
             handle: instances.len() - 1,
+            transformation: glam::Mat4::IDENTITY,
         };
         entries.push(entry);
     }
@@ -400,6 +403,7 @@ fn compact_blases(
             buffer: buffer_view,
             scratch: entry.scratch,
             handle: new_structures.len() - 1,
+            transformation: glam::Mat4::IDENTITY,
         });
     }
     (

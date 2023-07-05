@@ -1,4 +1,5 @@
 use anyhow::Result;
+use phobos::domain::All;
 use phobos::vk;
 use phobos::vk::Handle;
 use phobos::{GraphicsCmdBuffer, IncompleteCmdBuffer, RecordGraphToCommandBuffer};
@@ -10,19 +11,13 @@ mod graphics;
 mod spirv;
 mod utils;
 
-/// Resources used by the basic renderer
-struct Resources {
-    pub offscreen: phobos::Image,
-    pub offscreen_view: phobos::ImageView,
-    pub sampler: phobos::Sampler,
-    pub vertex_buffer: phobos::Buffer,
-}
-
 /// The basic renderer
-struct Basic {
-    resources: Resources,
+struct Raytracing {
     scene: Arc<RwLock<asset::Scene>>,
-    blas: Arc<graphics::acceleration_structure::SceneAccelerationStructure>,
+    acceleration_structure: Arc<graphics::acceleration_structure::SceneAccelerationStructure>,
+    attachment: phobos::Image,
+    attachment_view: phobos::ImageView,
+    sampler: phobos::Sampler,
 }
 
 /// Debugging purposes only: gets the gltf name from my folder
@@ -33,7 +28,7 @@ fn gltf_sample_name(name: &str) -> String {
     )
 }
 
-impl app::App for Basic {
+impl app::App for Raytracing {
     fn new(mut ctx: app::Context) -> Result<Self>
     where
         Self: Sized,
@@ -42,22 +37,38 @@ impl app::App for Basic {
         let scene = loader.load_asset_from_file(
             std::path::Path::new(
                 //gltf_sample_name("Suzanne").as_str(),
-                gltf_sample_name("Sponza").as_str(),
+                gltf_sample_name("ToyCar").as_str(),
                 //"C:/Users/Danny/Documents/Assets/Junk Shop/Blender 2.gltf",
                 //"C:/Users/Danny/Documents/Assets/Classroom/classroom.gltf",
             ),
             &mut ctx,
         );
-        let blas = graphics::acceleration_structure::convert_scene_to_blas(&mut ctx, &scene);
+        let scene_acceleration_structure =
+            graphics::acceleration_structure::convert_scene_to_blas(&mut ctx, &scene);
+
+        let rgen = spirv::create_shader("shaders/raygen.spv", vk::ShaderStageFlags::RAYGEN_KHR);
+        let rchit =
+            spirv::create_shader("shaders/rayhit.spv", vk::ShaderStageFlags::CLOSEST_HIT_KHR);
+        let rmiss = spirv::create_shader("shaders/raymiss.spv", vk::ShaderStageFlags::MISS_KHR);
+
+        let pci = phobos::RayTracingPipelineBuilder::new("rt")
+            .max_recursion_depth(1)
+            .add_ray_gen_group(rgen)
+            .add_ray_hit_group(Some(rchit), None)
+            .add_ray_miss_group(rmiss)
+            .build();
+        ctx.resource_pool
+            .pipelines
+            .create_named_raytracing_pipeline(pci)?;
 
         // Load shader
-        let vtx_code = spirv::load_spirv_file(std::path::Path::new("shaders/vert.spv"));
-        let frag_code = spirv::load_spirv_file(std::path::Path::new("shaders/frag.spv"));
+        let vertex = spirv::load_spirv_file(std::path::Path::new("shaders/vert.spv"));
+        let fragment = spirv::load_spirv_file(std::path::Path::new("shaders/frag.spv"));
 
         let vertex =
-            phobos::ShaderCreateInfo::from_spirv(phobos::vk::ShaderStageFlags::VERTEX, vtx_code);
+            phobos::ShaderCreateInfo::from_spirv(phobos::vk::ShaderStageFlags::VERTEX, vertex);
         let fragment =
-            phobos::ShaderCreateInfo::from_spirv(phobos::vk::ShaderStageFlags::FRAGMENT, frag_code);
+            phobos::ShaderCreateInfo::from_spirv(phobos::vk::ShaderStageFlags::FRAGMENT, fragment);
 
         // Now we can start using the pipeline builder to create our full pipeline.
         let pci = phobos::PipelineBuilder::new("sample".to_string())
@@ -77,72 +88,24 @@ impl app::App for Basic {
         // Store the pipeline in the pipeline cache
         ctx.resource_pool.pipelines.create_named_pipeline(pci)?;
 
-        let frag_code = spirv::load_spirv_file(std::path::Path::new("shaders/blue.spv"));
-        let fragment =
-            phobos::ShaderCreateInfo::from_spirv(phobos::vk::ShaderStageFlags::FRAGMENT, frag_code);
-
-        let pci = phobos::PipelineBuilder::new("offscreen".to_string())
-            .vertex_input(0, phobos::vk::VertexInputRate::VERTEX)
-            .vertex_attribute(0, 0, phobos::vk::Format::R32G32_SFLOAT)?
-            .vertex_attribute(0, 1, phobos::vk::Format::R32G32_SFLOAT)?
-            .dynamic_states(&[
-                phobos::vk::DynamicState::VIEWPORT,
-                phobos::vk::DynamicState::SCISSOR,
-            ])
-            .blend_attachment_none()
-            .cull_mask(phobos::vk::CullModeFlags::NONE)
-            .attach_shader(vertex)
-            .attach_shader(fragment)
-            .build();
-        ctx.resource_pool.pipelines.create_named_pipeline(pci)?;
-
-        {
-            let rgen = spirv::create_shader("shaders/raygen.spv", vk::ShaderStageFlags::RAYGEN_KHR);
-            let rchit =
-                spirv::create_shader("shaders/rayhit.spv", vk::ShaderStageFlags::CLOSEST_HIT_KHR);
-            let rmiss = spirv::create_shader("shaders/raymiss.spv", vk::ShaderStageFlags::MISS_KHR);
-
-            let pci = phobos::RayTracingPipelineBuilder::new("rt")
-                .max_recursion_depth(1)
-                .add_ray_gen_group(rgen)
-                .add_ray_hit_group(Some(rchit), None)
-                .add_ray_miss_group(rmiss)
-                .build();
-            ctx.resource_pool
-                .pipelines
-                .create_named_raytracing_pipeline(pci)?;
-        }
-
-        // Define some resources we will use for rendering
-        let image = phobos::Image::new(
+        let attachment = phobos::Image::new(
             ctx.device.clone(),
             &mut ctx.allocator,
             800,
             600,
-            phobos::vk::ImageUsageFlags::COLOR_ATTACHMENT | phobos::vk::ImageUsageFlags::SAMPLED,
-            phobos::vk::Format::R8G8B8A8_SRGB,
-            phobos::vk::SampleCountFlags::TYPE_1,
+            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE,
+            vk::Format::R32G32B32A32_SFLOAT,
+            vk::SampleCountFlags::TYPE_1,
         )?;
-        let data: Vec<f32> = vec![
-            -1.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0,
-            1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0,
-        ];
-
-        let resources = Resources {
-            offscreen_view: image.view(phobos::vk::ImageAspectFlags::COLOR)?,
-            offscreen: image,
-            sampler: phobos::Sampler::default(ctx.device.clone())?,
-            vertex_buffer: app::staged_buffer_upload(
-                ctx.clone(),
-                data.as_slice(),
-                phobos::vk::BufferUsageFlags::VERTEX_BUFFER,
-            )?,
-        };
+        let view = attachment.view(vk::ImageAspectFlags::COLOR)?;
+        let sampler = phobos::Sampler::default(ctx.device.clone())?;
 
         Ok(Self {
-            resources,
             scene: Arc::new(RwLock::new(scene)),
-            blas: Arc::new(blas),
+            acceleration_structure: Arc::new(scene_acceleration_structure),
+            attachment,
+            attachment_view: view,
+            sampler,
         })
     }
 
@@ -151,89 +114,76 @@ impl app::App for Basic {
         ctx: app::Context,
         ifc: phobos::InFlightContext,
     ) -> Result<phobos::sync::submit_batch::SubmitBatch<phobos::domain::All>> {
-        // Define a virtual resource pointing to the swapchain
-        let swap_resource = phobos::image!("swapchain");
-        let offscreen = phobos::image!("offscreen");
-
-        let vertices: Vec<f32> = vec![
-            -1.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0,
-            1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0,
-        ];
-
-        // Define a render graph with one pass that clears the swapchain image
-        let graph = phobos::PassGraph::new();
+        let swap = phobos::image!("swapchain");
+        let rt_image = phobos::image!("rt_out");
 
         let mut pool = phobos::pool::LocalPool::new(ctx.resource_pool.clone())?;
 
-        // Render pass that renders to an offscreen attachment
-        let offscreen_pass = phobos::PassBuilder::render("offscreen")
-            .color([1.0, 0.0, 0.0, 1.0])
-            .clear_color_attachment(&offscreen, phobos::ClearColor::Float([0.0, 0.0, 0.0, 0.0]))?
-            .execute_fn(|mut cmd, ifc, _bindings, _| {
-                // Our pass will render a fullscreen quad that 'clears' the screen, just so we can test pipeline creation
-                let mut buffer = ifc.allocate_scratch_vbo(
-                    (vertices.len() * std::mem::size_of::<f32>()) as phobos::vk::DeviceSize,
-                )?;
-                let slice = buffer.mapped_slice::<f32>()?;
-                slice.copy_from_slice(vertices.as_slice());
-                cmd = cmd
-                    .bind_vertex_buffer(0, &buffer)
-                    .bind_graphics_pipeline("offscreen")?
-                    .full_viewport_scissor()
-                    .draw(6, 1, 0, 0)?;
-                Ok(cmd)
+        let rt_pass = phobos::PassBuilder::new("raytrace")
+            .write_storage_image(&rt_image, phobos::PipelineStage::RAY_TRACING_SHADER_KHR)
+            .execute_fn(|cmd, ifc, bindings, _| {
+                let view = glam::Mat4::look_at_rh(
+                    glam::Vec3::new(0.0, 0.0, -0.0),
+                    glam::Vec3::new(0.0, 0.0, 1.0),
+                    glam::Vec3::new(0.0, 1.0, 0.0),
+                );
+                let projection =
+                    glam::Mat4::perspective_rh(90.0_f32.to_radians(), 800.0 / 600.0, 0.001, 100.0);
+                cmd.bind_ray_tracing_pipeline("rt")?
+                    .push_constant(vk::ShaderStageFlags::RAYGEN_KHR, 0, &view)
+                    .push_constant(vk::ShaderStageFlags::RAYGEN_KHR, 64, &projection)
+                    .bind_acceleration_structure(
+                        0,
+                        0,
+                        self.acceleration_structure
+                            .tlas
+                            .resources
+                            .acceleration_structures
+                            .get(0)
+                            .unwrap(),
+                    )?
+                    .resolve_and_bind_storage_image(0, 1, &rt_image, bindings)?
+                    .trace_rays(800, 600, 1)
             })
             .build();
 
-        // Render pass that samples the offscreen attachment, and possibly does some postprocessing to it
-        let sample_pass = phobos::PassBuilder::render(String::from("sample"))
-            .color([0.0, 1.0, 0.0, 1.0])
-            .clear_color_attachment(
-                &swap_resource,
-                phobos::ClearColor::Float([0.0, 0.0, 0.0, 0.0]),
-            )?
+        let render_pass = phobos::PassBuilder::render("copy")
+            .clear_color_attachment(&swap, phobos::ClearColor::Float([0.0, 0.0, 0.0, 0.0]))?
             .sample_image(
-                offscreen_pass.output(&offscreen).unwrap(),
+                rt_pass.output(&rt_image).unwrap(),
                 phobos::PipelineStage::FRAGMENT_SHADER,
             )
-            .execute_fn(|cmd, _ifc, bindings, _| {
+            .execute_fn(|cmd, ifc, bindings, _| {
+                let vertices: Vec<f32> = vec![
+                    -1.0, 1.0, 0.0, 1.0, -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0,
+                    1.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0,
+                ];
+                let mut vtx_buffer = ifc.allocate_scratch_vbo(
+                    (vertices.len() * std::mem::size_of::<f32>()) as vk::DeviceSize,
+                )?;
+                let slice = vtx_buffer.mapped_slice::<f32>()?;
+                slice.copy_from_slice(vertices.as_slice());
                 cmd.full_viewport_scissor()
                     .bind_graphics_pipeline("sample")?
-                    .resolve_and_bind_sampled_image(
-                        0,
-                        0,
-                        &offscreen,
-                        &self.resources.sampler,
-                        bindings,
-                    )?
+                    .bind_vertex_buffer(0, &vtx_buffer)
+                    .resolve_and_bind_sampled_image(0, 0, &rt_image, &self.sampler, bindings)?
                     .draw(6, 1, 0, 0)
             })
             .build();
-        // Add another pass to handle presentation to the screen
-        let present_pass = phobos::PassBuilder::present(
-            "present",
-            // This pass uses the output from the clear pass on the swap resource as its input
-            sample_pass.output(&swap_resource).unwrap(),
-        );
-        let mut graph = graph
-            .add_pass(offscreen_pass)?
-            .add_pass(sample_pass)?
-            .add_pass(present_pass)?
-            // Build the graph, now we can bind physical resources and use it.
+
+        let present = phobos::PassBuilder::present("present", render_pass.output(&swap).unwrap());
+        let mut graph = phobos::PassGraph::new()
+            .add_pass(rt_pass)?
+            .add_pass(render_pass)?
+            .add_pass(present)?
             .build()?;
 
         let mut bindings = phobos::PhysicalResourceBindings::new();
         bindings.bind_image("swapchain", &ifc.swapchain_image);
-        bindings.bind_image("offscreen", &self.resources.offscreen_view);
-        // create a command buffer capable of executing graphics commands
-        let cmd = ctx
-            .execution_manager
-            .on_domain::<phobos::domain::All>()
-            .unwrap();
-        // record render graph to this command buffer
-        let cmd = graph
-            .record(cmd, &bindings, &mut pool, None, &mut ())?
-            .finish()?;
+        bindings.bind_image("rt_out", &self.attachment_view);
+        let cmd = ctx.execution_manager.on_domain::<All>()?;
+        let cmd = graph.record(cmd, &bindings, &mut pool, None, &mut ())?;
+        let cmd = cmd.finish()?;
         let mut batch = ctx.execution_manager.start_submit_batch()?;
         batch.submit_for_present(cmd, ifc, pool)?;
         Ok(batch)
@@ -245,5 +195,5 @@ fn main() -> Result<()> {
     app::Runner::new("DARE", Some(&window), |settings| {
         settings.raytracing(true).build()
     })?
-    .run::<Basic>(Some(window))
+    .run::<Raytracing>(Some(window))
 }

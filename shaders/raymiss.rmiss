@@ -4,6 +4,7 @@
 
 struct Payload {
     vec3 hit_value;
+    vec2 uv;
 };
 
 layout(location = 0) rayPayloadInEXT Payload payload;

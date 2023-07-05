@@ -5,6 +5,7 @@
 
 struct Payload {
     vec3 hit_value;
+    vec2 uv;
 };
 
 layout(location = 0) rayPayloadInEXT Payload payload;
@@ -12,5 +13,5 @@ layout(location = 0) rayPayloadInEXT Payload payload;
 hitAttributeEXT vec3 attribs;
 
 void main() {
-   payload.hit_value = vec3(1.0, 0.0, 0.0);
+   payload.hit_value = vec3(payload.uv.xy, 0.0);
 }
