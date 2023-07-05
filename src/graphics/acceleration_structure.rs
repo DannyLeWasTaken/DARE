@@ -10,7 +10,7 @@ use crate::utils::types;
 use anyhow::Result;
 
 use phobos::domain::Compute;
-use phobos::{vk, ComputeCmdBuffer, IncompleteCmdBuffer};
+use phobos::{vk, AccelerationStructureType, ComputeCmdBuffer, IncompleteCmdBuffer};
 
 /// Represents the stored acceleration structure
 pub struct AllocatedAS {
@@ -244,11 +244,15 @@ fn create_acceleration_structure(
         ctx.device
             .set_name(
                 &acceleration_structure,
-                build_info
-                    .name
-                    .as_ref()
-                    .unwrap_or(&String::from("Unnamed"))
-                    .as_str(),
+                &format!(
+                    "{:?} {}",
+                    build_info.name.as_ref().unwrap_or(&String::from("Unnamed")),
+                    match build_info.handle.ty() {
+                        phobos::AccelerationStructureType::TopLevel => "TLAS",
+                        phobos::AccelerationStructureType::BottomLevel => "BLAS",
+                        _ => "",
+                    },
+                ),
             )
             .unwrap();
         instances.push(acceleration_structure);
@@ -426,11 +430,10 @@ fn compact_blases(
         ctx.device
             .set_name(
                 &new_as,
-                entry
-                    .name
-                    .as_ref()
-                    .unwrap_or(&String::from("Unnamed"))
-                    .as_str(),
+                &format!(
+                    "{} BLAS",
+                    entry.name.as_ref().unwrap_or(&String::from("Unnamed"))
+                ),
             )
             .unwrap();
         new_structures.push(new_as);
