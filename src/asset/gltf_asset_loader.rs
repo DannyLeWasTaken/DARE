@@ -247,7 +247,16 @@ impl GltfAssetLoader {
         if node.mesh().is_some() {
             let gltf_mesh = node.mesh().unwrap();
             // Mesh exists in node
-            meshes.append(&mut self.load_mesh(scene, gltf_mesh, transform));
+            meshes.append(&mut self.load_mesh(
+                scene,
+                gltf_mesh,
+                // convert from gltf to vulkan coordinates
+                transform
+                    * glam::Mat4::from_cols_array(&[
+                        1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5,
+                        1.0,
+                    ]),
+            ));
         }
         println!("Found {} meshes on layer {}", meshes.len(), layer);
         for child_node in node.children() {

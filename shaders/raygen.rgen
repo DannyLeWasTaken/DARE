@@ -4,6 +4,7 @@
 
 struct Payload {
     vec3 hit_value;
+    vec2 uv;
 };
 
 layout(binding = 0, set = 0) uniform accelerationStructureEXT tlas;
@@ -34,6 +35,7 @@ void main() {
     const float max_dist = 10000.0;
 
     payload.hit_value = vec3(0.0);
+    payload.uv = normalized_uv;
     // Do the actual ray tracing
     traceRayEXT(
         tlas,                   // Top-level acceleration structure
