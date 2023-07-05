@@ -42,39 +42,73 @@ impl GltfAssetLoader {
         let gltf = gltf::Gltf::open(gltf_path).unwrap();
         let (document, buffers, images) = gltf::import(gltf_path).unwrap();
 
-        // Quick, store it all into memory!
-        for gltf_buffer in document.buffers() {
-            let buffer = buffers.get(gltf_buffer.index()).unwrap();
-            let buffer_data = &*buffer.0;
-            let gpu_buffer = phobos::Buffer::new(
-                ctx.device.clone(),
-                &mut ctx.allocator,
-                gltf_buffer.length() as u64,
-                vk::BufferUsageFlags::TRANSFER_DST
-                    | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
-                phobos::MemoryType::CpuToGpu,
-            )
-            .unwrap();
-            gpu_buffer
-                .view_full()
-                .mapped_slice::<u8>()
-                .unwrap() // Stored as bytes
-                .copy_from_slice(buffer_data);
+        // Store buffers onto GPU memory rather than host visible memory
+        {
+            let temp_exec_manager = ctx.execution_manager.clone();
+            let mut staging_buffers: Vec<(phobos::Buffer, Arc<phobos::Buffer>)> = Vec::new();
+            let mut transfer_commands = temp_exec_manager
+                .on_domain::<phobos::domain::Compute>()
+                .unwrap();
 
-            // Debug naming
-            ctx.device
-                .set_name(&gpu_buffer, gltf_buffer.name().unwrap_or("Unnamed"))
-                .expect("Unable to debug name");
+            for gltf_buffer in document.buffers() {
+                let buffer = buffers.get(gltf_buffer.index()).unwrap();
+                let buffer_data = &*buffer.0;
+                let staging_buffer = phobos::Buffer::new(
+                    ctx.device.clone(),
+                    &mut ctx.allocator,
+                    gltf_buffer.length() as u64,
+                    vk::BufferUsageFlags::TRANSFER_SRC
+                        | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+                    phobos::MemoryType::CpuToGpu,
+                )
+                .unwrap();
+                staging_buffer
+                    .view_full()
+                    .mapped_slice::<u8>()
+                    .unwrap() // Stored as bytes
+                    .copy_from_slice(buffer_data);
 
-            println!("[gltf]: New buffer!");
-            println!("Buffer size: {}", gpu_buffer.size());
-            println!("Buffer data size in bytes: {}", buffer_data.len());
+                let gpu_buffer = phobos::Buffer::new(
+                    ctx.device.clone(),
+                    &mut ctx.allocator,
+                    staging_buffer.size(),
+                    vk::BufferUsageFlags::TRANSFER_DST
+                        | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
+                    phobos::MemoryType::GpuOnly,
+                )
+                .unwrap();
 
-            // Store buffer in scene
-            let buffer_handle = scene.buffer_storage.insert(gpu_buffer);
-            scene
-                .buffers
-                .insert(gltf_buffer.index() as u64, buffer_handle);
+                // Debug naming
+                ctx.device
+                    .set_name(&gpu_buffer, gltf_buffer.name().unwrap_or("Unnamed"))
+                    .expect("Unable to debug name");
+
+                println!("[gltf]: New buffer!");
+                println!("Buffer size: {}", staging_buffer.size());
+                println!("Buffer data size in bytes: {}", buffer_data.len());
+
+                // Store buffer in scene
+                let buffer_handle = scene.buffer_storage.insert(gpu_buffer);
+                scene
+                    .buffers
+                    .insert(gltf_buffer.index() as u64, buffer_handle.clone());
+                staging_buffers.push((
+                    staging_buffer,
+                    scene.buffer_storage.get_immutable(&buffer_handle).unwrap(),
+                ));
+            }
+
+            for (staging_buffer, gpu_buffer) in staging_buffers {
+                transfer_commands = transfer_commands
+                    .copy_buffer(&staging_buffer.view_full(), &gpu_buffer.view_full())
+                    .unwrap();
+            }
+
+            ctx.execution_manager
+                .submit(transfer_commands.finish().unwrap())
+                .unwrap()
+                .wait()
+                .unwrap();
         }
 
         {
