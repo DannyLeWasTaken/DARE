@@ -12,5 +12,9 @@ This utilizes the [phobos-rs](https://github.com/NotAPenguin0/phobos-rs/tree/mas
 - [X] Asset system
 - [X] Asset importing (gltf)
 - [X] Asset uploading to GPU (futures)
-- [ ] Acceleration structure abstraction
-- [ ] Basic geometry renderer (no shading)
+- [X] Acceleration structure abstraction
+- [X] Basic geometry renderer (no shading)
+- [ ] Camera Movement
+- [ ] Textures
+- [ ] Rendering Equation
+  - [ ] Lambertian
