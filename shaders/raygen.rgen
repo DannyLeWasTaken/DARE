@@ -1,11 +1,7 @@
 #version 460
 
 #extension GL_EXT_ray_tracing : require
-
-struct Payload {
-    vec3 hit_value;
-    vec2 uv;
-};
+#include "ray_struct.inc.glsl"
 
 layout(binding = 0, set = 0) uniform accelerationStructureEXT tlas;
 layout(binding = 1, set = 0, rgba32f) uniform image2D rt_out;
