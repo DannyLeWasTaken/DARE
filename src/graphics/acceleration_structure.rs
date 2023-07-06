@@ -80,7 +80,11 @@ struct AccelerationStructureBuildInfo<'a> {
     /// Offset of this BLAS entry in the scratch buffer
     scratch_offset: u64,
 
+    /// Name of the AS
     name: Option<String>,
+
+    /// Transformation
+    transformation: glam::Mat4,
 }
 
 /// Gets the build information of the BLASes based off of the scene
@@ -94,16 +98,22 @@ fn get_blas_entries<'a>(
 ) -> Vec<(
     Result<phobos::AccelerationStructureBuildInfo<'a>>,
     Option<String>,
+    glam::Mat4,
 )> {
     let mut build_infos: Vec<(
         Result<phobos::AccelerationStructureBuildInfo<'a>>,
         Option<String>,
+        glam::Mat4,
     )> = Vec::with_capacity(meshes.len());
 
     for mesh_handle in meshes {
         let mesh = scene.meshes_storage.get_immutable(mesh_handle);
         if mesh.is_none() {
-            build_infos.push((Err(anyhow::anyhow!("No mesh found")), None));
+            build_infos.push((
+                Err(anyhow::anyhow!("No mesh found")),
+                None,
+                glam::Mat4::IDENTITY,
+            ));
             continue;
         }
         // Retrieve the mesh's vertex and index buffer
@@ -114,6 +124,7 @@ fn get_blas_entries<'a>(
             build_infos.push((
                 Err(anyhow::anyhow!("No vertex or index buffer found")),
                 None,
+                mesh.transform.clone(),
             ));
             continue;
         }
@@ -121,7 +132,11 @@ fn get_blas_entries<'a>(
         let index_buffer = index_buffer.unwrap();
         let index_type = types::convert_scalar_format_to_index(index_buffer.format);
         if index_type.is_none() {
-            build_infos.push((Err(anyhow::anyhow!("No index type found")), None));
+            build_infos.push((
+                Err(anyhow::anyhow!("No index type found")),
+                None,
+                glam::Mat4::IDENTITY,
+            ));
             continue;
         }
 
@@ -161,6 +176,7 @@ fn get_blas_entries<'a>(
                 // first_vertex in push_range could be a concern thanks to first_index
             ),
             mesh.name.clone(),
+            mesh.transform,
         ));
     }
     build_infos
@@ -260,7 +276,7 @@ fn create_acceleration_structure(
             buffer: buffer_view,
             scratch: scratch_view,
             handle: instances.len() - 1,
-            transformation: glam::Mat4::IDENTITY,
+            transformation: build_info.transformation,
             name: build_info.name.clone(),
         };
         entries.push(entry);
@@ -441,7 +457,7 @@ fn compact_blases(
             buffer: buffer_view,
             scratch: entry.scratch,
             handle: new_structures.len() - 1,
-            transformation: glam::Mat4::IDENTITY,
+            transformation: entry.transformation,
             name: entry.name.clone(),
         });
     }
@@ -463,6 +479,12 @@ pub fn make_instances_buffer(
 ) -> Result<phobos::Buffer> {
     let mut instances: Vec<phobos::AccelerationStructureInstance> = Vec::new();
     for entry in entries {
+        let m = entry.transformation.transpose();
+        let transformation_matrix = phobos::TransformMatrix::from_rows(&[
+            m.x_axis.to_array(),
+            m.y_axis.to_array(),
+            m.z_axis.to_array(),
+        ]);
         instances.push(
             phobos::AccelerationStructureInstance::default()
                 .mask(0xFF)
@@ -471,7 +493,7 @@ pub fn make_instances_buffer(
                 .unwrap()
                 .custom_index(0)
                 .unwrap()
-                .transform(phobos::TransformMatrix::identity())
+                .transform(transformation_matrix)
                 .acceleration_structure(
                     as_resources
                         .acceleration_structures
@@ -601,6 +623,7 @@ fn get_tlas_build_infos<'a>(
             buffer_offset: 0,
             scratch_offset: 0,
             name: Some(String::from("TLAS")),
+            transformation: glam::Mat4::IDENTITY,
         });
     }
     out_vec
@@ -620,7 +643,7 @@ pub fn create_blas_from_scene(
     let mut blas_build_infos: Vec<AccelerationStructureBuildInfo> =
         get_blas_entries(&meshes_selected, scene)
             .into_iter()
-            .filter_map(|(x, name)| {
+            .filter_map(|(x, name, transform)| {
                 if let Ok(x) = x {
                     Some(AccelerationStructureBuildInfo {
                         handle: x,
@@ -628,6 +651,7 @@ pub fn create_blas_from_scene(
                         buffer_offset: 0,
                         scratch_offset: 0,
                         name,
+                        transformation: transform,
                     })
                 } else {
                     println!("[acceleration_structure]: Failed to load mesh properly");
