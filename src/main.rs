@@ -4,6 +4,7 @@ use phobos::vk;
 use phobos::vk::Handle;
 use phobos::{GraphicsCmdBuffer, IncompleteCmdBuffer, RecordGraphToCommandBuffer};
 use std::sync::{Arc, RwLock};
+use winit::event::{ElementState, Event};
 
 mod app;
 mod asset;
@@ -18,6 +19,11 @@ struct Raytracing {
     attachment: phobos::Image,
     attachment_view: phobos::ImageView,
     sampler: phobos::Sampler,
+    camera: graphics::camera::Camera,
+    last_frame_time: std::time::Instant,
+    delta_time: f32,
+    last_camera_pos: Option<glam::Vec2>,
+    left_mouse_button_down: bool,
 }
 
 /// Debugging purposes only: gets the gltf name from my folder
@@ -37,7 +43,7 @@ impl app::App for Raytracing {
         let scene = loader.load_asset_from_file(
             std::path::Path::new(
                 //gltf_sample_name("Suzanne").as_str(),
-                gltf_sample_name("ToyCar").as_str(),
+                gltf_sample_name("Suzanne").as_str(),
                 //"C:/Users/Danny/Documents/Assets/Junk Shop/Blender 2.gltf",
                 //"C:/Users/Danny/Documents/Assets/Classroom/classroom.gltf",
             ),
@@ -106,6 +112,11 @@ impl app::App for Raytracing {
             attachment,
             attachment_view: view,
             sampler,
+            camera: graphics::camera::Camera::new(),
+            last_frame_time: std::time::Instant::now(),
+            delta_time: 0.0,
+            last_camera_pos: None,
+            left_mouse_button_down: false,
         })
     }
 
@@ -122,11 +133,7 @@ impl app::App for Raytracing {
         let rt_pass = phobos::PassBuilder::new("raytrace")
             .write_storage_image(&rt_image, phobos::PipelineStage::RAY_TRACING_SHADER_KHR)
             .execute_fn(|cmd, ifc, bindings, _| {
-                let view = glam::Mat4::look_at_rh(
-                    glam::Vec3::new(0.0, 0.0, -0.0),
-                    glam::Vec3::new(0.0, 0.0, 1.0),
-                    glam::Vec3::new(0.0, 1.0, 0.0),
-                );
+                let view = self.camera.view;
                 let projection =
                     glam::Mat4::perspective_rh(90.0_f32.to_radians(), 800.0 / 600.0, 0.001, 100.0);
                 cmd.bind_ray_tracing_pipeline("rt")?
@@ -186,7 +193,98 @@ impl app::App for Raytracing {
         let cmd = cmd.finish()?;
         let mut batch = ctx.execution_manager.start_submit_batch()?;
         batch.submit_for_present(cmd, ifc, pool)?;
+        let now = std::time::Instant::now();
+        self.delta_time = (now - self.last_frame_time).as_secs_f32();
+        self.last_frame_time = now;
         Ok(batch)
+    }
+
+    fn handle_event(&mut self, winit_event: &Event<()>) -> Result<()> {
+        use winit::event::ElementState;
+        use winit::event::VirtualKeyCode;
+        let camera_speed: f32 = self.camera.speed;
+        let delta_time = self.delta_time;
+        let camera_front = self.camera.front;
+        let camera_up = self.camera.up;
+        let right = self.camera.right;
+
+        let camera_sensitivity: f32 = 16.0f32;
+
+        #[allow(clippy::single_match)]
+        #[allow(clippy::collapsible_match)]
+        match winit_event {
+            Event::WindowEvent { event, .. } => match event {
+                winit::event::WindowEvent::KeyboardInput { input, .. } => match input {
+                    winit::event::KeyboardInput {
+                        virtual_keycode,
+                        state,
+                        ..
+                    } => match (virtual_keycode, state) {
+                        (Some(VirtualKeyCode::W), ElementState::Pressed) => {
+                            self.camera.position += camera_front * camera_speed * delta_time;
+                        }
+                        (Some(VirtualKeyCode::S), ElementState::Pressed) => {
+                            self.camera.position -= camera_front * camera_speed * delta_time;
+                        }
+                        (Some(VirtualKeyCode::A), ElementState::Pressed) => {
+                            self.camera.position -= right * camera_speed * delta_time;
+                        }
+                        (Some(VirtualKeyCode::D), ElementState::Pressed) => {
+                            self.camera.position += right * camera_speed * delta_time;
+                        }
+                        (Some(VirtualKeyCode::Q), ElementState::Pressed) => {
+                            self.camera.position += camera_up * camera_speed * delta_time;
+                        }
+                        (Some(VirtualKeyCode::E), ElementState::Pressed) => {
+                            self.camera.position -= camera_up * camera_speed * delta_time;
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                },
+                winit::event::WindowEvent::MouseWheel { delta, .. } => match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                        self.camera.speed += 0.5 * y;
+                        self.camera.speed = self.camera.speed.clamp(0.0, f32::MAX);
+                    }
+                    _ => {}
+                },
+                winit::event::WindowEvent::CursorMoved { position, .. } => {
+                    if (self.left_mouse_button_down) {
+                        let current_position: glam::Vec2 =
+                            glam::Vec2::new(position.x as f32, position.y as f32);
+                        let last_position: glam::Vec2 =
+                            self.last_camera_pos.unwrap_or(current_position);
+                        let offset_position: glam::Vec2 =
+                            (current_position - last_position) * delta_time * camera_sensitivity;
+                        self.camera.yaw += offset_position.x;
+                        self.camera.pitch += offset_position.y;
+                        self.camera.pitch = self.camera.pitch.clamp(-89.0f32, 89.0f32);
+                        self.last_camera_pos = Some(current_position);
+                    }
+                }
+                winit::event::WindowEvent::CursorLeft { .. } => {
+                    self.last_camera_pos = None;
+                }
+                winit::event::WindowEvent::MouseInput { button, state, .. } => {
+                    match (button, state) {
+                        (winit::event::MouseButton::Left, ElementState::Released) => {
+                            self.last_camera_pos = None;
+                            self.left_mouse_button_down = false;
+                        }
+                        (winit::event::MouseButton::Left, ElementState::Pressed) => {
+                            self.last_camera_pos = None;
+                            self.left_mouse_button_down = true;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        };
+        self.camera.update_camera();
+        Ok(())
     }
 }
 
