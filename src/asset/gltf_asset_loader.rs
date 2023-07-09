@@ -29,15 +29,15 @@ impl GltfAssetLoader {
         let mut scene = asset::Scene {
             meshes: HashMap::new(),
             buffers: HashMap::new(),
-            image_buffers: HashMap::new(),
-
             images: HashMap::new(),
+            textures: HashMap::new(),
             attributes: HashMap::new(),
 
             meshes_storage: Storage::new(),
             buffer_storage: Storage::new(),
             attributes_storage: Storage::new(),
             image_storage: Storage::new(),
+            texture_storage: Storage::new(),
         };
         let gltf = gltf::Gltf::open(gltf_path).unwrap();
         let (document, buffers, images) = gltf::import(gltf_path).unwrap();
@@ -186,6 +186,50 @@ impl GltfAssetLoader {
                 .unwrap();
         }
 
+        // Create samplers
+        // NOTE: This does not deal with default samplers.
+        {
+            for gltf_sampler in document.samplers() {
+                if gltf_sampler.index().is_none() {
+                    continue;
+                }
+                let phobos_sampler = phobos::Sampler::new(
+                    ctx.device.clone(),
+                    vk::SamplerCreateInfo {
+                        mag_filter: translate_filter(
+                            gltf_sampler
+                                .mag_filter()
+                                .unwrap_or(gltf::texture::MagFilter::Linear),
+                        ),
+                        min_filter: translate_filter(
+                            gltf_sampler
+                                .mag_filter()
+                                .unwrap_or(gltf::texture::MagFilter::Linear),
+                        ),
+                        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                        address_mode_u: translate_wrap_mode(gltf_sampler.wrap_s()),
+                        address_mode_v: translate_wrap_mode(gltf_sampler.wrap_t()),
+                        address_mode_w: vk::SamplerAddressMode::REPEAT,
+                        mip_lod_bias: 0.0,
+                        anisotropy_enable: vk::FALSE,
+                        max_anisotropy: 16.0,
+                        compare_enable: vk::FALSE,
+                        compare_op: vk::CompareOp::ALWAYS,
+                        min_lod: 0.0,
+                        max_lod: vk::LOD_CLAMP_NONE,
+                        border_color: vk::BorderColor::INT_OPAQUE_BLACK,
+                        unnormalized_coordinates: vk::FALSE,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                scene.textures.insert(
+                    gltf_sampler.index().unwrap() as u64,
+                    scene.texture_storage.insert(phobos_sampler),
+                );
+            }
+        }
+
         // Load accessors first then load meshes second
         for gltf_mesh in document.meshes() {
             for gltf_primitive in gltf_mesh.primitives() {
@@ -306,7 +350,8 @@ impl GltfAssetLoader {
                     match gltf_attribute.0 {
                         gltf::Semantic::Positions
                         | gltf::Semantic::Normals
-                        | gltf::Semantic::Tangents => {
+                        | gltf::Semantic::Tangents
+                        | gltf::Semantic::TexCoords(_) => {
                             // Check if accessor exists already
                             let accessor = gltf_attribute.1;
                             if scene.attributes.get(&(accessor.index() as u64)).is_some() {
@@ -326,12 +371,7 @@ impl GltfAssetLoader {
         }
         // Select just one scene for now
         for gltf_node in document.scenes().next().unwrap().nodes() {
-            let gltf_mat = glam::Mat4::from_cols(
-                glam::Vec4::from(gltf_node.transform().matrix()[0]),
-                glam::Vec4::from(gltf_node.transform().matrix()[1]),
-                glam::Vec4::from(gltf_node.transform().matrix()[2]),
-                glam::Vec4::from(gltf_node.transform().matrix()[3]),
-            );
+            let gltf_mat = glam::Mat4::from_cols_array_2d(&gltf_node.transform().matrix());
             let asset_meshes = self.flatten_meshes(&scene, gltf_node, gltf_mat, 1);
             for mesh in asset_meshes {
                 scene
@@ -364,16 +404,7 @@ impl GltfAssetLoader {
         if node.mesh().is_some() {
             let gltf_mesh = node.mesh().unwrap();
             // Mesh exists in node
-            meshes.append(&mut self.load_mesh(
-                scene,
-                gltf_mesh,
-                // convert from gltf to vulkan coordinates
-                transform
-                    * glam::Mat4::from_cols_array(&[
-                        1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5,
-                        1.0,
-                    ]),
-            ));
+            meshes.append(&mut self.load_mesh(scene, gltf_mesh, transform));
         }
         println!("Found {} meshes on layer {}", meshes.len(), layer);
         for child_node in node.children() {
@@ -490,4 +521,19 @@ fn convert_image_types_to_rgba(convert_from_format: gltf::image::Format, data: &
             .flatten()
         })
         .collect::<Vec<u8>>()
+}
+
+fn translate_filter(filter: gltf::texture::MagFilter) -> vk::Filter {
+    match filter {
+        gltf::texture::MagFilter::Nearest => vk::Filter::NEAREST,
+        gltf::texture::MagFilter::Linear => vk::Filter::LINEAR,
+    }
+}
+
+fn translate_wrap_mode(wrap: gltf::texture::WrappingMode) -> vk::SamplerAddressMode {
+    match wrap {
+        gltf::texture::WrappingMode::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        gltf::texture::WrappingMode::MirroredRepeat => vk::SamplerAddressMode::MIRRORED_REPEAT,
+        gltf::texture::WrappingMode::Repeat => vk::SamplerAddressMode::REPEAT,
+    }
 }
