@@ -48,6 +48,12 @@ impl<T> Clone for Handle<T> {
     }
 }
 
+impl<T> Handle<T> {
+    pub fn get_handle_id(&self) -> usize {
+        self.handle_id
+    }
+}
+
 /// Storage for all the handles\
 /// Responsible for handling, removing, and modifying all handles.
 ///
