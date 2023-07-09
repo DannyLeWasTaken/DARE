@@ -6,6 +6,7 @@ use crate::asset;
 use crate::utils::handle_storage::Handle;
 use crate::utils::memory;
 use crate::utils::types;
+use std::ops::Deref;
 
 use anyhow::Result;
 
@@ -31,6 +32,9 @@ pub struct AllocatedAS {
 
     /// Name of the acceleration structure
     name: Option<String>,
+
+    /// Handle to the original mesh
+    mesh_handle: Option<Handle<asset::Mesh>>,
 }
 
 /// Contains all the resources used by [`AllocatedAS`]
@@ -85,6 +89,9 @@ struct AccelerationStructureBuildInfo<'a> {
 
     /// Transformation
     transformation: glam::Mat4,
+
+    /// Mesh handle
+    mesh_handle: Option<Handle<asset::Mesh>>,
 }
 
 /// Gets the build information of the BLASes based off of the scene
@@ -97,13 +104,13 @@ fn get_blas_entries<'a>(
     scene: &asset::Scene,
 ) -> Vec<(
     Result<phobos::AccelerationStructureBuildInfo<'a>>,
-    Option<String>,
-    glam::Mat4,
+    Handle<asset::Mesh>,
+    Option<asset::Mesh>,
 )> {
     let mut build_infos: Vec<(
         Result<phobos::AccelerationStructureBuildInfo<'a>>,
-        Option<String>,
-        glam::Mat4,
+        Handle<asset::Mesh>,
+        Option<asset::Mesh>,
     )> = Vec::with_capacity(meshes.len());
 
     for mesh_handle in meshes {
@@ -111,8 +118,8 @@ fn get_blas_entries<'a>(
         if mesh.is_none() {
             build_infos.push((
                 Err(anyhow::anyhow!("No mesh found")),
+                mesh_handle.clone(),
                 None,
-                glam::Mat4::IDENTITY,
             ));
             continue;
         }
@@ -123,8 +130,8 @@ fn get_blas_entries<'a>(
         if vertex_buffer.is_none() || index_buffer.is_none() {
             build_infos.push((
                 Err(anyhow::anyhow!("No vertex or index buffer found")),
-                None,
-                mesh.transform.clone(),
+                mesh_handle.clone(),
+                Some(mesh.as_ref().clone()),
             ));
             continue;
         }
@@ -134,8 +141,8 @@ fn get_blas_entries<'a>(
         if index_type.is_none() {
             build_infos.push((
                 Err(anyhow::anyhow!("No index type found")),
-                None,
-                glam::Mat4::IDENTITY,
+                mesh_handle.clone(),
+                Some(mesh.as_ref().clone()),
             ));
             continue;
         }
@@ -175,8 +182,8 @@ fn get_blas_entries<'a>(
                     .push_range((index_buffer.count / 3) as u32, 0, 0, 0),
                 // first_vertex in push_range could be a concern thanks to first_index
             ),
-            mesh.name.clone(),
-            mesh.transform,
+            mesh_handle.clone(),
+            Some(mesh.as_ref().clone()),
         ));
     }
     build_infos
@@ -278,6 +285,7 @@ fn create_acceleration_structure(
             handle: instances.len() - 1,
             transformation: build_info.transformation,
             name: build_info.name.clone(),
+            mesh_handle: build_info.mesh_handle.clone(),
         };
         entries.push(entry);
     }
@@ -459,6 +467,7 @@ fn compact_blases(
             handle: new_structures.len() - 1,
             transformation: entry.transformation,
             name: entry.name.clone(),
+            mesh_handle: entry.mesh_handle.clone(),
         });
     }
     (
@@ -624,6 +633,7 @@ fn get_tlas_build_infos<'a>(
             scratch_offset: 0,
             name: Some(String::from("TLAS")),
             transformation: glam::Mat4::IDENTITY,
+            mesh_handle: None,
         });
     }
     out_vec
@@ -643,15 +653,16 @@ pub fn create_blas_from_scene(
     let mut blas_build_infos: Vec<AccelerationStructureBuildInfo> =
         get_blas_entries(&meshes_selected, scene)
             .into_iter()
-            .filter_map(|(x, name, transform)| {
+            .filter_map(|(x, mesh_handle, mesh)| {
                 if let Ok(x) = x {
                     Some(AccelerationStructureBuildInfo {
                         handle: x,
                         size_info: None,
                         buffer_offset: 0,
                         scratch_offset: 0,
-                        name,
-                        transformation: transform,
+                        name: (mesh.as_ref().unwrap()).name.clone(),
+                        transformation: mesh.as_ref().unwrap().transform,
+                        mesh_handle: Some(mesh_handle),
                     })
                 } else {
                     println!("[acceleration_structure]: Failed to load mesh properly");
