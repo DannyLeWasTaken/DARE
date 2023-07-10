@@ -9,6 +9,7 @@ use crate::utils::handle_storage::Storage;
 use crate::utils::memory;
 use anyhow;
 use anyhow::Result;
+use bytemuck;
 use gltf::accessor::DataType;
 use gltf::Semantic;
 use phobos::vk::Handle;
@@ -57,8 +58,6 @@ impl GltfAssetLoader {
                     ctx.device.clone(),
                     &mut ctx.allocator,
                     gltf_buffer.length() as u64,
-                    vk::BufferUsageFlags::TRANSFER_SRC
-                        | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
                     phobos::MemoryType::CpuToGpu,
                 )
                 .unwrap();
@@ -72,8 +71,6 @@ impl GltfAssetLoader {
                     ctx.device.clone(),
                     &mut ctx.allocator,
                     staging_buffer.size(),
-                    vk::BufferUsageFlags::TRANSFER_DST
-                        | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
                     phobos::MemoryType::GpuOnly,
                 )
                 .unwrap();
@@ -138,7 +135,6 @@ impl GltfAssetLoader {
                 let staging_buffer = memory::make_transfer_buffer(
                     ctx,
                     image_data.as_slice(),
-                    vk::BufferUsageFlags::TRANSFER_SRC,
                     None,
                     gltf_image.name().unwrap_or(
                         format!("Unnamed image buffer {:?}", image_phobos.format()).as_str(),
@@ -219,7 +215,7 @@ impl GltfAssetLoader {
                         max_lod: vk::LOD_CLAMP_NONE,
                         border_color: vk::BorderColor::INT_OPAQUE_BLACK,
                         unnormalized_coordinates: vk::FALSE,
-                        ..Default::default()
+                        ..std::default::Default::default()
                     },
                 )
                 .unwrap();
@@ -461,6 +457,215 @@ impl GltfAssetLoader {
         }
         asset_meshes
     }
+}
+
+use gltf::accessor::Dimensions;
+use gltf::json::accessor::{ComponentType, Type};
+use winit::window::CursorIcon::Default;
+
+fn get_dimension_size(dimension: Dimensions) -> Option<u32> {
+    match dimension {
+        Type::Scalar => Some(1),
+        Type::Vec2 => Some(2),
+        Type::Vec3 => Some(3),
+        Type::Vec4 => Some(4),
+        _ => None,
+    }
+}
+
+fn get_component_size(component: DataType) -> u32 {
+    (match component {
+        ComponentType::I8 => std::mem::size_of::<i8>(),
+        ComponentType::U8 => std::mem::size_of::<u8>(),
+        ComponentType::I16 => std::mem::size_of::<i16>(),
+        ComponentType::U16 => std::mem::size_of::<u16>(),
+        ComponentType::U32 => std::mem::size_of::<u32>(),
+        ComponentType::F32 => std::mem::size_of::<f32>(),
+    } as u32)
+}
+
+fn convert_slice_type<T: bytemuck::Pod, U: bytemuck::Pod, F: Fn(T) -> U>(
+    input: &[u8],
+    convert: F,
+) -> Vec<u8> {
+    let typed_input: &[T] = bytemuck::cast_slice(input);
+    let output: Vec<U> = typed_input.into_iter().map(|&x| convert(x)).collect();
+    bytemuck::cast_slice(&output).to_vec()
+}
+
+/// I hate this
+fn convert_component_type(src_type: DataType, dst_type: DataType, data: &[u8]) -> Option<Vec<u8>> {
+    if src_type == dst_type {
+        return Some(data.to_vec());
+    } else {
+        match (src_type, dst_type) {
+            (DataType::U8, DataType::I8) => {
+                Some(convert_slice_type::<u8, i8, _>(data, |x| x as i8))
+            }
+            (DataType::U8, DataType::I16) => {
+                Some(convert_slice_type::<u8, i16, _>(data, |x| x as i16))
+            }
+            (DataType::U8, DataType::U16) => {
+                Some(convert_slice_type::<u8, u16, _>(data, |x| x as u16))
+            }
+            (DataType::U8, DataType::U32) => {
+                Some(convert_slice_type::<u8, u32, _>(data, |x| x as u32))
+            }
+            (DataType::U8, DataType::F32) => {
+                Some(convert_slice_type::<u8, f32, _>(data, |x| x as f32))
+            }
+
+            (DataType::I8, DataType::U8) => {
+                Some(convert_slice_type::<i8, u8, _>(data, |x| x as u8))
+            }
+            (DataType::I8, DataType::I16) => {
+                Some(convert_slice_type::<i8, i16, _>(data, |x| x as i16))
+            }
+            (DataType::I8, DataType::U16) => {
+                Some(convert_slice_type::<i8, u16, _>(data, |x| x as u16))
+            }
+            (DataType::I8, DataType::U32) => {
+                Some(convert_slice_type::<i8, u32, _>(data, |x| x as u32))
+            }
+            (DataType::I8, DataType::F32) => {
+                Some(convert_slice_type::<i8, f32, _>(data, |x| x as f32))
+            }
+
+            (DataType::I16, DataType::I8) => {
+                Some(convert_slice_type::<i16, i8, _>(data, |x| x as i8))
+            }
+            (DataType::I16, DataType::U8) => {
+                Some(convert_slice_type::<i16, u8, _>(data, |x| x as u8))
+            }
+            (DataType::I16, DataType::U16) => {
+                Some(convert_slice_type::<i16, u16, _>(data, |x| x as u16))
+            }
+            (DataType::I16, DataType::U32) => {
+                Some(convert_slice_type::<i16, u32, _>(data, |x| x as u32))
+            }
+            (DataType::I16, DataType::F32) => {
+                Some(convert_slice_type::<i16, f32, _>(data, |x| x as f32))
+            }
+
+            (DataType::U16, DataType::I8) => {
+                Some(convert_slice_type::<u16, i8, _>(data, |x| x as i8))
+            }
+            (DataType::U16, DataType::U8) => {
+                Some(convert_slice_type::<u16, u8, _>(data, |x| x as u8))
+            }
+            (DataType::U16, DataType::I16) => {
+                Some(convert_slice_type::<u16, i16, _>(data, |x| x as i16))
+            }
+            (DataType::U16, DataType::U32) => {
+                Some(convert_slice_type::<u16, u32, _>(data, |x| x as u32))
+            }
+            (DataType::U16, DataType::F32) => {
+                Some(convert_slice_type::<u16, f32, _>(data, |x| x as f32))
+            }
+
+            (DataType::U32, DataType::I8) => {
+                Some(convert_slice_type::<u32, i8, _>(data, |x| x as i8))
+            }
+            (DataType::U32, DataType::U8) => {
+                Some(convert_slice_type::<u32, u8, _>(data, |x| x as u8))
+            }
+            (DataType::U32, DataType::I16) => {
+                Some(convert_slice_type::<u32, i16, _>(data, |x| x as i16))
+            }
+            (DataType::U32, DataType::U16) => {
+                Some(convert_slice_type::<u32, u16, _>(data, |x| x as u16))
+            }
+            (DataType::U32, DataType::F32) => {
+                Some(convert_slice_type::<u32, f32, _>(data, |x| x as f32))
+            }
+
+            (DataType::F32, DataType::I8) => {
+                Some(convert_slice_type::<f32, i8, _>(data, |x| x as i8))
+            }
+            (DataType::F32, DataType::U8) => {
+                Some(convert_slice_type::<f32, u8, _>(data, |x| x as u8))
+            }
+            (DataType::F32, DataType::I16) => {
+                Some(convert_slice_type::<f32, i16, _>(data, |x| x as i16))
+            }
+            (DataType::F32, DataType::U16) => {
+                Some(convert_slice_type::<f32, u16, _>(data, |x| x as u16))
+            }
+            (DataType::F32, DataType::U32) => {
+                Some(convert_slice_type::<f32, u32, _>(data, |x| x as u32))
+            }
+
+            _ => None,
+        }
+    }
+}
+
+fn get_zero_as_bytes(dst_type: DataType) -> &'static [u8] {
+    match dst_type {
+        ComponentType::I8 => bytemuck::bytes_of(&0i8),
+        ComponentType::U8 => bytemuck::bytes_of(&0u8),
+        ComponentType::I16 => bytemuck::bytes_of(&0i16),
+        ComponentType::U16 => bytemuck::bytes_of(&0u16),
+        ComponentType::U32 => bytemuck::bytes_of(&0u32),
+        ComponentType::F32 => bytemuck::bytes_of(&0f32),
+    }
+}
+
+/// Literally does that.
+/// Converts the component type (u16, f32, f64, etc.) to the desired one
+/// Then converts dimensions
+fn convert_data_type(
+    src_dimension: Dimensions,
+    dst_type: DataType,
+    src_type: DataType,
+    dst_dimension: Dimensions,
+    data: &[u8],
+) -> Option<Vec<u8>> {
+    let src_dimension = get_dimension_size(src_dimension);
+    let dst_dimension = get_dimension_size(dst_dimension);
+    let src_component_size = get_component_size(src_type);
+    let dst_component_size = get_component_size(dst_type);
+    if src_dimension.is_none() || dst_dimension.is_none() {
+        return None;
+    }
+    let src_dimension = src_dimension.unwrap();
+    let dst_dimension = dst_dimension.unwrap();
+    Some(
+        data.chunks((src_dimension * src_component_size) as usize)
+            .flat_map(|data| {
+                let mut out: Vec<u8> = Vec::new();
+                // Iterate over each component
+                for (dimension, ..) in (1..=src_dimension)
+                    .take(dst_dimension as usize)
+                    .zip(1..=dst_dimension)
+                {
+                    if dimension <= dst_dimension {
+                        // Get component at current dimension
+                        let section = data.get(
+                            ((src_component_size * (src_dimension - 1)) as usize)
+                                ..((src_component_size * src_dimension) as usize),
+                        );
+                        // welcome to hell my friend, it's not hot, but fucking boring
+                        let section = match section {
+                            None => get_zero_as_bytes(dst_type).to_vec(),
+                            Some(section) => {
+                                match convert_component_type(src_type, dst_type, section) {
+                                    Some(section) => section,
+                                    None => get_zero_as_bytes(dst_type).to_vec(),
+                                }
+                            }
+                        };
+                        out.extend_from_slice(section.as_slice());
+                    } else {
+                        // src_dimension is too big
+                        // vec4 -> vec2 examples
+                        break;
+                    }
+                }
+                out.into_iter()
+            })
+            .collect::<Vec<u8>>(),
+    )
 }
 
 /// Converts the image type from gltf to Vulkan format
