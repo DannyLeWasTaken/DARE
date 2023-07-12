@@ -227,6 +227,8 @@ impl GltfAssetLoader {
         }
 
         // Load accessors first then load meshes second
+        // While we could index the gltf accessor, this will let us care about accessors that
+        // are used by the scene
         for gltf_mesh in document.meshes() {
             for gltf_primitive in gltf_mesh.primitives() {
                 // Only accept primitives which have indices
@@ -239,17 +241,23 @@ impl GltfAssetLoader {
                     continue;
                 }
 
+                #[derive(Debug)]
+                enum AccessorType {
+                    Gltf(gltf::Semantic),
+                    Index,
+                };
+
                 // Gets the handle for any given accessor
                 let get_attribute_handle =
                     |accessor: gltf::Accessor,
-                     semantic: Option<gltf::Semantic>|
+                     semantic: AccessorType|
                      -> handle_storage::Handle<asset::AttributeView> {
                         // Create a buffer view
                         let accessor_viewer = &accessor.view().unwrap();
                         let total_offset = accessor_viewer.offset() + accessor.offset();
                         let component_size = accessor.size();
                         let stride = accessor_viewer.stride().unwrap_or(component_size);
-                        let buffer_size = stride * (accessor.count() - 1) + component_size;
+                        let buffer_size = stride * accessor.count();
 
                         // Get buffer which is referenced and store attribute in scene
                         let buffer = scene
@@ -262,11 +270,49 @@ impl GltfAssetLoader {
                             )
                             .unwrap();
 
+                        use gltf::accessor::Dimensions;
+                        {
+                            let loaded_buffer = convert_data_type(
+                                accessor.data_type(),
+                                accessor.dimensions(),
+                                match accessor.data_type() {
+                                    DataType::U32 => DataType::U32,
+                                    DataType::U16 => DataType::U16,
+                                    DataType::U8 => DataType::U8,
+                                    _ => DataType::F32,
+                                },
+                                match accessor.dimensions() {
+                                    Dimensions::Scalar => Dimensions::Scalar,
+                                    Dimensions::Mat4 => Dimensions::Mat4,
+                                    Dimensions::Mat3 => Dimensions::Mat3,
+                                    Dimensions::Mat2 => Dimensions::Mat2,
+                                    Dimensions::Vec2 => Dimensions::Vec2,
+                                    _ => Dimensions::Vec3,
+                                },
+                                view_buffer(
+                                    buffers
+                                        .get(accessor_viewer.buffer().index())
+                                        .unwrap()
+                                        .0
+                                        .as_slice(),
+                                    get_component_size(accessor.data_type()) as usize,
+                                    total_offset,
+                                    total_offset + buffer_size,
+                                    stride,
+                                )
+                                .as_slice(),
+                            )
+                            .unwrap();
+
+                            if loaded_buffer.len() % 4 == 0 {
+                                let float_buffer: Vec<f32> =
+                                    bytemuck::cast_slice(&loaded_buffer).to_vec();
+                                println!("{:?}", float_buffer);
+                            }
+                        }
+
                         println!("Name: {}", accessor.name().unwrap_or("unnamed"));
-                        println!(
-                            "Semantic: {:#?}",
-                            semantic.unwrap_or(gltf::Semantic::Weights(0))
-                        );
+                        println!("Semantic: {:#?}", semantic,);
                         println!("Buffer Start Address: {}", buffer.address());
                         println!(
                             "Buffer offset: {} + {} = {}",
@@ -281,8 +327,6 @@ impl GltfAssetLoader {
                         println!("Data type: {:?}", accessor.data_type());
                         println!("Dimension: {:?}", accessor.dimensions());
                         println!("\n\n");
-
-                        use gltf::accessor::Dimensions;
 
                         scene.attributes_storage.insert(asset::AttributeView {
                             buffer_view: buffer
@@ -336,7 +380,7 @@ impl GltfAssetLoader {
                     if scene.attributes.get(&(accessor.index() as u64)).is_none() {
                         scene.attributes.insert(
                             accessor.index() as u64,
-                            get_attribute_handle(accessor, None),
+                            get_attribute_handle(accessor, AccessorType::Index),
                         );
                     }
                 }
@@ -357,7 +401,10 @@ impl GltfAssetLoader {
                             // Create an attribute handle
                             scene.attributes.insert(
                                 accessor.index() as u64,
-                                get_attribute_handle(accessor, Some(gltf_attribute.0)),
+                                get_attribute_handle(
+                                    accessor,
+                                    AccessorType::Gltf(gltf_attribute.0),
+                                ),
                             );
                         }
                         _ => {}
@@ -459,9 +506,36 @@ impl GltfAssetLoader {
     }
 }
 
+/// Gets the buffer information given an offset and stride
+fn view_buffer(
+    buffer: &[u8],
+    size: usize,
+    byte_offset: usize,
+    byte_end: usize,
+    stride: usize,
+) -> Vec<u8> {
+    if byte_offset >= buffer.len() {
+        return Vec::new();
+    }
+
+    let my_range = 0..9;
+
+    println!(
+        "[Buffer]: {} - {}, [Buffer size]: {}",
+        byte_offset,
+        byte_end,
+        buffer.len(),
+    );
+    buffer
+        .get(byte_offset..byte_end)
+        .unwrap()
+        .chunks(stride)
+        .flat_map(|chunk| chunk.get(0..size).unwrap().to_vec())
+        .collect::<Vec<u8>>()
+}
+
 use gltf::accessor::Dimensions;
 use gltf::json::accessor::{ComponentType, Type};
-use winit::window::CursorIcon::Default;
 
 fn get_dimension_size(dimension: Dimensions) -> Option<u32> {
     match dimension {
@@ -615,9 +689,9 @@ fn get_zero_as_bytes(dst_type: DataType) -> &'static [u8] {
 /// Converts the component type (u16, f32, f64, etc.) to the desired one
 /// Then converts dimensions
 fn convert_data_type(
+    src_type: DataType,
     src_dimension: Dimensions,
     dst_type: DataType,
-    src_type: DataType,
     dst_dimension: Dimensions,
     data: &[u8],
 ) -> Option<Vec<u8>> {
@@ -630,21 +704,39 @@ fn convert_data_type(
     }
     let src_dimension = src_dimension.unwrap();
     let dst_dimension = dst_dimension.unwrap();
+    {
+        let to_float: Vec<f32> = bytemuck::cast_slice(data).to_vec();
+        println!("INPUT: {:?}", to_float);
+    }
     Some(
         data.chunks((src_dimension * src_component_size) as usize)
             .flat_map(|data| {
                 let mut out: Vec<u8> = Vec::new();
                 // Iterate over each component
-                for (dimension, ..) in (1..=src_dimension)
-                    .take(dst_dimension as usize)
-                    .zip(1..=dst_dimension)
-                {
+                for dimension in 1..=dst_dimension {
                     if dimension <= dst_dimension {
                         // Get component at current dimension
                         let section = data.get(
-                            ((src_component_size * (src_dimension - 1)) as usize)
-                                ..((src_component_size * src_dimension) as usize),
+                            ((src_component_size * (dimension - 1)) as usize)
+                                ..((src_component_size * dimension) as usize),
                         );
+                        if section.is_some() && section.unwrap().len() % 2 == 0 {
+                            let to_float: Vec<u16> =
+                                bytemuck::cast_slice(section.unwrap()).to_vec();
+                            println!(
+                                "{:?}, active dimension: {}, dimensions (src, dst): {} - {}, Range: {} - {}",
+                                to_float,
+                                dimension,
+                                src_dimension,
+                                dst_dimension,
+                                (src_component_size * (dimension - 1)),
+                                (src_component_size * dimension)
+                            );
+                            println!(
+                                "Comp size (src, dst): {} - {}",
+                                src_component_size, dst_component_size
+                            );
+                        }
                         // welcome to hell my friend, it's not hot, but fucking boring
                         let section = match section {
                             None => get_zero_as_bytes(dst_type).to_vec(),
