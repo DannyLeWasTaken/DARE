@@ -61,11 +61,23 @@ pub struct AccelerationStructure {
     pub(crate) instances: Vec<AllocatedAS>,
 }
 
+/// A struct that represents a BLAS's buffers to be used by the shader
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct BLASBufferAddresses {
+    pub(crate) vertex_buffer: u64,
+    pub(crate) index_buffer: u64,
+    pub(crate) normal_buffer: u64,
+    pub(crate) tex_buffer: u64,
+}
+
 /// All the acceleration structures used in a scene
 pub struct SceneAccelerationStructure {
     pub(crate) tlas: AccelerationStructure,
     pub(crate) blas: AccelerationStructure,
     pub(crate) instances: phobos::Buffer,
+    pub(crate) addresses: Vec<BLASBufferAddresses>,
+    pub(crate) addresses_buffer: Option<phobos::Buffer>,
 }
 
 /// Contains additional information to build acceleration structures
@@ -217,20 +229,12 @@ fn create_acceleration_structure(
     let mut instances: Vec<phobos::AccelerationStructure> = Vec::with_capacity(build_infos.len());
     let buffer_size = total_blas_memory(build_infos);
     let scratch_size = total_scratch_memory(build_infos);
-    let as_buffer = phobos::Buffer::new_device_local(
-        ctx.device.clone(),
-        &mut ctx.allocator,
-        buffer_size,
-        vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR,
-    )
-    .unwrap();
-    let scratch_buffer = phobos::Buffer::new_device_local(
-        ctx.device.clone(),
-        &mut ctx.allocator,
-        scratch_size,
-        vk::BufferUsageFlags::STORAGE_BUFFER,
-    )
-    .unwrap();
+    let as_buffer =
+        phobos::Buffer::new_device_local(ctx.device.clone(), &mut ctx.allocator, buffer_size)
+            .unwrap();
+    let scratch_buffer =
+        phobos::Buffer::new_device_local(ctx.device.clone(), &mut ctx.allocator, scratch_size)
+            .unwrap();
 
     ctx.device.set_name(&as_buffer, "AS memory").unwrap();
     ctx.device
@@ -407,7 +411,6 @@ fn compact_blases(
         ctx.device.clone(),
         &mut ctx.allocator,
         total_compacted_size,
-        vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR,
     )
     .unwrap();
     ctx.device
@@ -484,9 +487,12 @@ fn compact_blases(
 pub fn make_instances_buffer(
     ctx: &mut crate::app::Context,
     as_resources: &AccelerationStructureResources,
+    scene: &asset::Scene,
     entries: &Vec<AllocatedAS>,
-) -> Result<phobos::Buffer> {
+) -> (Result<phobos::Buffer>, Vec<BLASBufferAddresses>) {
     let mut instances: Vec<phobos::AccelerationStructureInstance> = Vec::new();
+    let mut blas_addresses: Vec<BLASBufferAddresses> = Vec::new();
+    let mut mesh_index: u32 = 0;
     for entry in entries {
         let m = entry.transformation.transpose();
         let transformation_matrix = phobos::TransformMatrix::from_rows(&[
@@ -494,13 +500,17 @@ pub fn make_instances_buffer(
             m.y_axis.to_array(),
             m.z_axis.to_array(),
         ]);
+        let mesh = scene
+            .meshes_storage
+            .get_immutable(&entry.mesh_handle.as_ref().unwrap())
+            .unwrap();
         instances.push(
             phobos::AccelerationStructureInstance::default()
                 .mask(0xFF)
                 .flags(vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE)
                 .sbt_record_offset(0)
                 .unwrap()
-                .custom_index(0)
+                .custom_index(mesh_index)
                 .unwrap()
                 .transform(transformation_matrix)
                 .acceleration_structure(
@@ -512,14 +522,28 @@ pub fn make_instances_buffer(
                 )
                 .unwrap(),
         );
+        let vertex_buffer = scene
+            .attributes_storage
+            .get_immutable(&mesh.vertex_buffer)
+            .unwrap();
+        let index_buffer = scene
+            .attributes_storage
+            .get_immutable(&mesh.index_buffer)
+            .unwrap();
+
+        blas_addresses.push(BLASBufferAddresses {
+            vertex_buffer: vertex_buffer.buffer_view.address(),
+            index_buffer: index_buffer.buffer_view.address(),
+            normal_buffer: 0,
+            tex_buffer: 0,
+        });
+        mesh_index += 1;
+        mesh_index &= 0xFFFFFF;
     }
 
-    memory::make_transfer_buffer(
-        ctx,
-        instances.as_slice(),
-        Default::default(),
-        Some(16),
-        "Instance Buffer",
+    (
+        memory::make_transfer_buffer(ctx, instances.as_slice(), Some(16), "Instance Buffer"),
+        blas_addresses,
     )
 }
 
@@ -748,14 +772,21 @@ pub fn create_blas_from_scene(
 /// * The number of BLAS [`AllocatedAS`] is not the same as the number of instances
 pub fn create_tlas(
     ctx: &mut crate::app::Context,
+    scene: &asset::Scene,
     blas: &AccelerationStructure,
-) -> Result<(AccelerationStructure, phobos::Buffer)> {
+) -> Result<(
+    AccelerationStructure,
+    phobos::Buffer,
+    Vec<BLASBufferAddresses>,
+)> {
     assert_eq!(
         blas.resources.acceleration_structures.len(),
         blas.instances.len(),
         "BLAS stored structures is not the same size that the number of instances"
     );
-    let instance_buffer = make_instances_buffer(ctx, &blas.resources, &blas.instances)
+    let (instance_buffer, blas_addresses) =
+        make_instances_buffer(ctx, &blas.resources, scene, &blas.instances);
+    let instance_buffer = instance_buffer
         .map_err(|e| {
             println!(
                 "[acceleration_structure]: Couldn't make instance buffer for TLAS: {}",
@@ -824,6 +855,7 @@ pub fn create_tlas(
             instances: allocated_structures,
         },
         instance_buffer,
+        blas_addresses,
     ))
 }
 
@@ -837,13 +869,18 @@ pub fn convert_scene_to_blas(
     );
     let do_compaction: bool = true; // Whether or not to do compaction
     let blas: AccelerationStructure = create_blas_from_scene(ctx, scene, do_compaction);
-    let (tlas, tlas_instance_buffer): (AccelerationStructure, phobos::Buffer) =
-        create_tlas(ctx, &blas).expect("Failed to build TLAS");
+    let (tlas, tlas_instance_buffer, blas_addresses) =
+        create_tlas(ctx, scene, &blas).expect("Failed to build TLAS");
+    let address_buffer =
+        memory::make_transfer_buffer(ctx, blas_addresses.as_slice(), None, "Object description")
+            .unwrap();
 
     SceneAccelerationStructure {
         tlas,
         blas,
         instances: tlas_instance_buffer,
+        addresses: blas_addresses,
+        addresses_buffer: Some(address_buffer),
     }
 }
 
