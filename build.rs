@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 #[cfg(feature = "shaderc")]
-use shaderc::{CompileOptions, EnvVersion, IncludeCallbackResult, TargetEnv};
+use shaderc::{CompileOptions, EnvVersion, TargetEnv};
 
 #[cfg(feature = "shaderc")]
 fn load_file(path: &Path) -> String {

@@ -76,7 +76,7 @@ pub struct SceneAccelerationStructure {
     pub(crate) tlas: AccelerationStructure,
     pub(crate) blas: AccelerationStructure,
     pub(crate) instances: phobos::Buffer,
-    pub(crate) addresses: Vec<BLASBufferAddresses>,
+    pub(crate) addresses: Vec<asset::CMesh>,
     pub(crate) addresses_buffer: Option<phobos::Buffer>,
 }
 
@@ -489,9 +489,9 @@ pub fn make_instances_buffer(
     as_resources: &AccelerationStructureResources,
     scene: &asset::Scene,
     entries: &Vec<AllocatedAS>,
-) -> (Result<phobos::Buffer>, Vec<BLASBufferAddresses>) {
+) -> (Result<phobos::Buffer>, Vec<asset::CMesh>) {
     let mut instances: Vec<phobos::AccelerationStructureInstance> = Vec::new();
-    let mut blas_addresses: Vec<BLASBufferAddresses> = Vec::new();
+    let mut bindless_mesh_info: Vec<asset::CMesh> = Vec::new();
     let mut mesh_index: u32 = 0;
     for entry in entries {
         let m = entry.transformation.transpose();
@@ -531,19 +531,23 @@ pub fn make_instances_buffer(
             .get_immutable(&mesh.index_buffer)
             .unwrap();
 
-        blas_addresses.push(BLASBufferAddresses {
-            vertex_buffer: vertex_buffer.buffer_view.address(),
-            index_buffer: index_buffer.buffer_view.address(),
-            normal_buffer: 0,
-            tex_buffer: 0,
-        });
+        let get_buffer_address = |buffer: &Option<Handle<asset::AttributeView>>| -> u64 {
+            if let Some(buffer) = buffer {
+                if let Some(buffer) = scene.attributes_storage.get_immutable(buffer) {
+                    return buffer.buffer_view.address();
+                }
+            }
+            return 0u64;
+        };
+
+        bindless_mesh_info.push(mesh.to_c_struct(scene));
         mesh_index += 1;
         mesh_index &= 0xFFFFFF;
     }
 
     (
         memory::make_transfer_buffer(ctx, instances.as_slice(), Some(16), "Instance Buffer"),
-        blas_addresses,
+        bindless_mesh_info,
     )
 }
 
@@ -673,7 +677,7 @@ pub fn create_blas_from_scene(
     do_compaction: bool,
 ) -> AccelerationStructure {
     // Get build information from the scene
-    let meshes_selected: Vec<Handle<asset::Mesh>> = scene.meshes.values().cloned().collect();
+    let meshes_selected: Vec<Handle<asset::Mesh>> = scene.meshes.clone();
     let mut blas_build_infos: Vec<AccelerationStructureBuildInfo> =
         get_blas_entries(&meshes_selected, scene)
             .into_iter()
@@ -774,17 +778,13 @@ pub fn create_tlas(
     ctx: &mut crate::app::Context,
     scene: &asset::Scene,
     blas: &AccelerationStructure,
-) -> Result<(
-    AccelerationStructure,
-    phobos::Buffer,
-    Vec<BLASBufferAddresses>,
-)> {
+) -> Result<(AccelerationStructure, phobos::Buffer, Vec<asset::CMesh>)> {
     assert_eq!(
         blas.resources.acceleration_structures.len(),
         blas.instances.len(),
         "BLAS stored structures is not the same size that the number of instances"
     );
-    let (instance_buffer, blas_addresses) =
+    let (instance_buffer, bindless_meshes) =
         make_instances_buffer(ctx, &blas.resources, scene, &blas.instances);
     let instance_buffer = instance_buffer
         .map_err(|e| {
@@ -855,7 +855,7 @@ pub fn create_tlas(
             instances: allocated_structures,
         },
         instance_buffer,
-        blas_addresses,
+        bindless_meshes,
     ))
 }
 
@@ -869,17 +869,17 @@ pub fn convert_scene_to_blas(
     );
     let do_compaction: bool = true; // Whether or not to do compaction
     let blas: AccelerationStructure = create_blas_from_scene(ctx, scene, do_compaction);
-    let (tlas, tlas_instance_buffer, blas_addresses) =
+    let (tlas, tlas_instance_buffer, bindless_meshes) =
         create_tlas(ctx, scene, &blas).expect("Failed to build TLAS");
     let address_buffer =
-        memory::make_transfer_buffer(ctx, blas_addresses.as_slice(), None, "Object description")
+        memory::make_transfer_buffer(ctx, bindless_meshes.as_slice(), None, "Object description")
             .unwrap();
 
     SceneAccelerationStructure {
         tlas,
         blas,
         instances: tlas_instance_buffer,
-        addresses: blas_addresses,
+        addresses: bindless_meshes,
         addresses_buffer: Some(address_buffer),
     }
 }

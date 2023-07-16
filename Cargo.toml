@@ -8,13 +8,14 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.71"
 futures = "0.3.28"
-phobos = { git = "https://github.com/NotAPenguin0/phobos-rs", rev = "09e19d0" }
+phobos = { git = "https://github.com/NotAPenguin0/phobos-rs", rev = "87049b7" }
 winit = "0.28.6"
 pretty_env_logger = "0.5.0"
-gltf = { version = "1.2.0", features = ["import", "names", "KHR_lights_punctual", "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_pbrSpecularGlossiness"] }
+gltf = { version = "1.2.0", features = ["import", "names", "KHR_lights_punctual", "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_pbrSpecularGlossiness", "KHR_materials_ior"] }
 glam = "0.24.1"
 ash = "0.37.3"
 log = "0.4.19"
+bytemuck = "1.13.1"
 
 [build-dependencies]
 shaderc = { version = "0.8.2", optional = true, features = ["build-from-source"] }

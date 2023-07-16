@@ -2,6 +2,7 @@
 //! built into them. These are useful to pass around to reference meshes. The Storage component
 //! allows them to be managed safely with more explicit garbage collection and thread safety.
 
+use ash::handle_nondispatchable;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,7 +23,7 @@ static ATOMIC_STORAGE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 ///
 /// [`Handle<T>`]: Handle
 /// [`Storage<T>`]: Storage
-#[derive(Copy, Hash, PartialEq, Eq, Default)]
+#[derive(Copy, Hash, Default)]
 pub struct Handle<T> {
     /// Index in the `Storage<T>`'s `storage` HashMap.
     index: usize,
@@ -36,6 +37,16 @@ pub struct Handle<T> {
     // Phantom marker to help during compile time for lifetimes and type-safety
     _marker: std::marker::PhantomData<*const T>,
 }
+
+impl<T> PartialEq for Handle<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+            && self.handle_id == other.handle_id
+            && self.storage_id == other.storage_id
+    }
+}
+
+impl<T> Eq for Handle<T> {}
 
 impl<T> Clone for Handle<T> {
     fn clone(&self) -> Self {

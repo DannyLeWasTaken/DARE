@@ -24,7 +24,7 @@ impl Camera {
 
         Self {
             position,
-            direction: glam::Vec3::new(0.0, 0.0, 0.0),
+            direction: glam::Vec3::new(0.0, 0.0, -1.0),
             front,
             right: glam::Vec3::normalize(glam::Vec3::cross(up, front)),
             world_up: up,
@@ -32,7 +32,7 @@ impl Camera {
             view: glam::Mat4::look_at_rh(position, position + front, up),
             speed: 16.0,
             pitch: 0.0,
-            yaw: 0.0,
+            yaw: 90.0,
         }
     }
 

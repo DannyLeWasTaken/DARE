@@ -14,7 +14,6 @@ pub fn get_size<T: Copy>(data: &[T]) -> u64 {
 pub fn make_transfer_buffer<T: Copy>(
     ctx: &mut crate::app::Context,
     data: &[T],
-    usage: vk::BufferUsageFlags,
     alignment: Option<u64>,
     name: &str,
 ) -> Result<phobos::Buffer> {
@@ -23,9 +22,6 @@ pub fn make_transfer_buffer<T: Copy>(
             ctx.device.clone(),
             &mut ctx.allocator,
             get_size(&data),
-            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | usage,
             phobos::MemoryType::CpuToGpu,
         )?,
         Some(alignment) => phobos::Buffer::new_aligned(
@@ -33,9 +29,6 @@ pub fn make_transfer_buffer<T: Copy>(
             &mut ctx.allocator,
             get_size(&data),
             alignment,
-            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-                | vk::BufferUsageFlags::TRANSFER_DST
-                | usage,
             phobos::MemoryType::CpuToGpu,
         )?,
     };
@@ -51,16 +44,11 @@ pub fn make_transfer_buffer<T: Copy>(
 pub fn copy_buffer_to_gpu_buffer(
     ctx: &mut crate::app::Context,
     in_buffer: phobos::Buffer,
-    usage_flags: Option<vk::BufferUsageFlags>,
     name: &str,
 ) -> Result<phobos::Buffer> {
     // Create a new buffer that is on the gpu only
-    let gpu_buffer = phobos::Buffer::new_device_local(
-        ctx.device.clone(),
-        &mut ctx.allocator,
-        in_buffer.size(),
-        usage_flags.unwrap_or(vk::BufferUsageFlags::TRANSFER_DST),
-    )?;
+    let gpu_buffer =
+        phobos::Buffer::new_device_local(ctx.device.clone(), &mut ctx.allocator, in_buffer.size())?;
 
     ctx.execution_manager
         .on_domain::<phobos::domain::Compute>()?
