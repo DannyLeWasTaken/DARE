@@ -669,16 +669,7 @@ impl GltfAssetLoader {
                     )
                     .unwrap()
                     .clone();
-                let sampler = scene
-                    .samplers
-                    .get(
-                        *scene_lookup
-                            .samplers
-                            .get(&gltf_texture.sampler().index().unwrap_or(0))
-                            .unwrap(),
-                    )
-                    .unwrap()
-                    .clone();
+                let sampler = scene.samplers.get(0).unwrap().clone();
                 texture_hashmap.insert(
                     gltf_texture.index(),
                     scene.texture_storage.insert(asset::Texture {
