@@ -232,10 +232,7 @@ impl app::App for Raytracing {
                     .mapped_slice::<asset::CMaterial>()
                     .unwrap()
                     .copy_from_slice(material_slice.as_slice());
-                println!(
-                    "Material address: {}",
-                    material_descriptor_scratch_buffer.address()
-                );
+
                 let images: Vec<phobos::ImageView> = scene_read
                     .images
                     .iter()
