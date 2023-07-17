@@ -88,6 +88,7 @@ impl GltfAssetLoader {
             sampler_storage: Storage::new(),
             texture_storage: Storage::new(),
             material_storage: Storage::new(),
+            material_buffer: None,
         };
         let mut scene_lookup = SceneLookup {
             meshes: HashMap::new(),
@@ -692,21 +693,23 @@ impl GltfAssetLoader {
             for gltf_material in document.materials() {
                 if let Some(gltf_material_index) = gltf_material.index() {
                     let pbr_metallic = gltf_material.pbr_metallic_roughness();
-                    let albedo: Option<Handle<asset::Texture>> =
+                    let albedo_texture: Option<Handle<asset::Texture>> =
                         pbr_metallic.base_color_texture().and_then(|x| {
                             scene_lookup
                                 .textures
                                 .get(&x.texture().index())
                                 .and_then(|x| scene.textures.get(*x).cloned())
                         });
-                    if albedo.is_none() {
+                    let albedo = pbr_metallic.base_color_factor();
+                    let albedo: [f32; 3] = [albedo[0], albedo[1], albedo[2]];
+                    if albedo_texture.is_none() {
                         println!("Something went very wrong");
                     }
                     material_hashmap.insert(
                         gltf_material_index,
                         scene.material_storage.insert(asset::Material {
-                            albedo_texture: albedo,
-                            albedo_color: glam::Vec3::new(0.0, 0.0, 0.0),
+                            albedo_texture,
+                            albedo_color: glam::Vec3::from(albedo),
                         }),
                     );
                 } else {
@@ -717,10 +720,33 @@ impl GltfAssetLoader {
             scene.materials = materials;
             scene_lookup.materials = lookup;
             println!("[gltf]: Scene has {} materials", scene.materials.len());
+            // Store it as a buffer
+            let material_buffer = memory::make_transfer_buffer(
+                ctx,
+                scene
+                    .materials
+                    .iter()
+                    .map(|x| {
+                        scene
+                            .material_storage
+                            .get_immutable(x)
+                            .unwrap()
+                            .to_c_struct(&scene)
+                    })
+                    .collect::<Vec<asset::CMaterial>>()
+                    .as_slice(),
+                None,
+                "Material buffer",
+            )
+            .unwrap();
+            let material_buffer =
+                memory::copy_buffer_to_gpu_buffer(ctx, material_buffer, "Material Buffer").unwrap();
+            scene.material_buffer = Some(material_buffer);
         }
 
         {
             let mut mesh_hashmap: HashMap<usize, Handle<asset::Mesh>> = HashMap::new();
+            let mut mesh_index = 0;
             // Select just one scene for now
             for gltf_node in document.scenes().next().unwrap().nodes() {
                 let gltf_mat = glam::Mat4::from_cols_array_2d(&gltf_node.transform().matrix());
@@ -731,8 +757,9 @@ impl GltfAssetLoader {
                 let transformed_matrix = transform_matrix * gltf_mat;
                 let asset_meshes =
                     self.flatten_meshes(&scene, &scene_lookup, gltf_node, transformed_matrix, 1);
-                for (index, mesh) in asset_meshes.into_iter().enumerate() {
-                    mesh_hashmap.insert(index, scene.meshes_storage.insert(mesh));
+                for mesh in asset_meshes.into_iter() {
+                    mesh_hashmap.insert(mesh_index, scene.meshes_storage.insert(mesh));
+                    mesh_index += 1;
                 }
             }
             let (meshes, lookup) = compress_hashmap(mesh_hashmap);
@@ -793,26 +820,6 @@ impl GltfAssetLoader {
         )
         .unwrap();
 
-        match dst_type {
-            ComponentType::U32 => {
-                let float_buffer: Vec<u32> = bytemuck::cast_slice(&compact_buffer).to_vec();
-                println!(
-                    "{}: {:?}",
-                    accessor.name().unwrap_or("Unnamed"),
-                    float_buffer
-                );
-            }
-            ComponentType::F32 => {
-                let float_buffer: Vec<f32> = bytemuck::cast_slice(&compact_buffer).to_vec();
-                println!(
-                    "{}: {:?}",
-                    accessor.name().unwrap_or("Unnamed"),
-                    float_buffer
-                );
-            }
-            _ => {}
-        }
-
         (compact_buffer, dst_type, dst_dimension)
     }
 
@@ -850,6 +857,7 @@ impl GltfAssetLoader {
                 layer + 1,
             ));
         }
+        println!("Now {} meshes on layer {}", meshes.len(), layer);
         meshes
     }
 
@@ -919,13 +927,6 @@ impl GltfAssetLoader {
             if tex_buffer.is_none() {
                 println!("Tex buffer is none!");
             }
-            println!(
-                "Material id: {}",
-                scene_lookup
-                    .materials
-                    .get(&gltf_primitive.material().index().unwrap())
-                    .unwrap()
-            );
             if vertex_buffer.is_some() && index_buffer.is_some() {
                 asset_meshes.push(asset::Mesh {
                     vertex_buffer: *vertex_buffer.unwrap(),
