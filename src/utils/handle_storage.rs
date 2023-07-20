@@ -1,12 +1,10 @@
 //! Handles are a data type which functionally are pointers without the actual pointing part
 //! built into them. These are useful to pass around to reference meshes. The Storage component
 //! allows them to be managed safely with more explicit garbage collection and thread safety.
-
-use ash::handle_nondispatchable;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 
 static ATOMIC_STORAGE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -24,7 +22,7 @@ static ATOMIC_STORAGE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// [`Handle<T>`]: Handle
 /// [`Storage<T>`]: Storage
 #[derive(Copy, Hash, Default)]
-pub struct Handle<T> {
+pub struct Handle<T: ?Sized> {
     /// Index in the `Storage<T>`'s `storage` HashMap.
     index: usize,
 
@@ -34,8 +32,10 @@ pub struct Handle<T> {
     /// Storage ID that the handle corresponds to
     storage_id: usize,
 
+    data: Weak<T>,
+
     // Phantom marker to help during compile time for lifetimes and type-safety
-    _marker: std::marker::PhantomData<*const T>,
+    _marker: std::marker::PhantomData<Box<T>>,
 }
 
 impl<T> PartialEq for Handle<T> {
@@ -54,6 +54,7 @@ impl<T> Clone for Handle<T> {
             index: self.index,
             handle_id: self.handle_id,
             storage_id: self.storage_id,
+            data: self.data.clone(),
             _marker: std::marker::PhantomData,
         }
     }
@@ -62,6 +63,11 @@ impl<T> Clone for Handle<T> {
 impl<T> Handle<T> {
     pub fn get_handle_id(&self) -> usize {
         self.handle_id
+    }
+
+    /// Get the data
+    pub fn get_data(&self) -> Weak<T> {
+        self.data.clone()
     }
 }
 
@@ -119,16 +125,17 @@ impl<T> Storage<T> {
         let next_index = storage.len() + 1;
         *handle_id += 1;
 
+        // Insert handles
+        storage.insert(next_index, Arc::new(data));
         // Create new handle
         let handle = Handle {
             index: next_index,
             handle_id: *handle_id,
             storage_id: *self.storage_id.read().unwrap(),
+            data: Arc::downgrade(storage.get(&next_index).unwrap()),
             _marker: std::marker::PhantomData,
         };
 
-        // Insert handles
-        storage.insert(next_index, Arc::new(data));
         handles.insert(next_index, handle.clone());
         handle
     }
