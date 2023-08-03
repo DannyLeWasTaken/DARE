@@ -100,12 +100,12 @@ impl app::App for Raytracing {
          */
         let scene = assets::scene::Scene::load(assets::scene::SceneLoadInfo::gltf {
             context: ctx.clone(),
-            //path: std::path::PathBuf::from(gltf_sample_name("BoxTextured")),
+            path: std::path::PathBuf::from(gltf_sample_name("OrientationTest")),
             //path: std::path::PathBuf::from(gltf_sample_name("BoomBoxWithAxes")),
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/deccer-cubes/SM_Deccer_Cubes_Textured_Complex.gltf",
             //),
-            path: std::path::PathBuf::from(gltf_sample_name("Sponza")),
+            //path: std::path::PathBuf::from(gltf_sample_name("Sponza")),
         })
         .unwrap();
         println!("[main]: Scene has {} mesh(es)", scene.meshes.len());

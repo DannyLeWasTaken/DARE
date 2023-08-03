@@ -90,7 +90,21 @@ fn flatten_primitives(
     root_nodes: Vec<&gltf::json::scene::Node>,
     document: &gltf::json::Root,
 ) -> (Vec<structs::GltfPrimitive>, Vec<usize>) {
-    let mut convert = glam::Mat4::from_rotation_y(180f32.to_radians());
+    let get_transformation =
+        |translation: Option<[f32; 3]>, rotation: Option<[f32; 4]>, scale: Option<[f32; 3]>| {
+            glam::Mat4::from_scale(scale.map(glam::Vec3::from).unwrap_or(glam::Vec3::ONE))
+                * glam::Mat4::from_quat(
+                    rotation
+                        .map(glam::Quat::from_array)
+                        .unwrap_or(glam::Quat::IDENTITY),
+                )
+                * glam::Mat4::from_translation(
+                    translation
+                        .map(glam::Vec3::from)
+                        .unwrap_or(glam::Vec3::ZERO),
+                )
+        };
+
     //convert.y_axis.y *= -1f32;
     //let convert = glam::Mat4::IDENTITY;
     let mut nodes: Vec<(gltf::json::Node, glam::Mat4)> = root_nodes
@@ -99,8 +113,12 @@ fn flatten_primitives(
             (
                 node.clone(),
                 node.matrix
-                    .map(|x| glam::Mat4::from_cols_array(&x) * convert)
-                    .unwrap_or(glam::Mat4::IDENTITY * convert),
+                    .map(|x| glam::Mat4::from_cols_array(&x))
+                    .unwrap_or(get_transformation(
+                        node.translation,
+                        node.rotation.map(|x| x.0),
+                        node.scale,
+                    )),
             )
         })
         .collect();
@@ -109,10 +127,6 @@ fn flatten_primitives(
     let mut seen_primitives: HashMap<(usize, usize), usize> = HashMap::new();
     while !nodes.is_empty() {
         let (node, transform) = nodes.pop().unwrap();
-        let mut transform = transform;
-        if let Some(scene_transform) = node.matrix {
-            transform *= glam::Mat4::from_cols_array(&scene_transform);
-        }
         if let Some(mesh_index) = node.mesh {
             let mesh = &document.meshes[mesh_index.value()];
             for (index, primitive) in mesh.primitives.iter().enumerate() {
@@ -147,7 +161,17 @@ fn flatten_primitives(
         }
         if let Some(node_childrens) = node.children {
             for child_node in node_childrens {
-                nodes.push((document.nodes[child_node.value()].clone(), transform));
+                let mut child_transform = transform;
+                if let Some(matrix) = node.matrix {
+                    child_transform *= glam::Mat4::from_cols_array(&matrix);
+                } else {
+                    child_transform *= get_transformation(
+                        node.translation,
+                        node.rotation.map(|x| x.0),
+                        node.scale,
+                    );
+                }
+                nodes.push((document.nodes[child_node.value()].clone(), child_transform));
             }
         }
     }
@@ -808,6 +832,12 @@ fn load_materials_from_primitives(
                         })
                     })
                 );
+                if pbr_material.base_color_texture.is_some() {
+                    assert_eq!(
+                        pbr_material.base_color_texture.as_ref().unwrap().tex_coord,
+                        0
+                    );
+                }
                 assets::material::Material {
                     albedo_texture: pbr_material
                         .base_color_texture

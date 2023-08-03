@@ -30,7 +30,7 @@ impl Camera {
             world_up: up,
             up,
             view: glam::Mat4::look_at_rh(position, position + front, up),
-            speed: 16.0,
+            speed: 0.05,
             pitch: 0.0,
             yaw: 0.0,
         }

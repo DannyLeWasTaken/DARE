@@ -86,7 +86,9 @@ void main() {
             tex_coord_0.y = 1 - tex_coord_0.y; // Flip Y
 
 
-            payload.hit_value = texture(texture_samplers[nonuniformEXT(material_resource.albedo_texture)], tex_coord_0).rgb;
+            payload.hit_value = texture(texture_samplers[nonuniformEXT(material_resource.albedo_texture)], tex_coord_0).rgb
+            * material_resource.albedo;
+            //payload.hit_value = hsv_to_rgb(vec3(float(gl_InstanceCustomIndexEXT) * M_GOLDEN_CONJ, 0.875, 0.85));
             //payload.hit_value = hsv_to_rgb(vec3(float(material_resource.albedo_texture) * M_GOLDEN_CONJ, 0.875, 0.85));
             //payload.hit_value = vec3(tex_coord_0, 0);
         } else {

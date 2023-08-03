@@ -510,11 +510,11 @@ pub fn make_instances_buffer(
     let mut bindless_mesh_info: Vec<assets::mesh::CMesh> = Vec::new();
     let mut mesh_index: u32 = 0;
     for entry in entries {
-        let m = entry.transformation.transpose();
-        let transformation_matrix = phobos::TransformMatrix::from_rows(&[
-            m.x_axis.to_array(),
-            m.y_axis.to_array(),
-            m.z_axis.to_array(),
+        let m = entry.transformation;
+        let transformation_matrix = phobos::TransformMatrix::from_elements(&[
+            m.x_axis.x, m.y_axis.x, m.z_axis.x, m.w_axis.x, // First row
+            m.x_axis.y, m.y_axis.y, m.z_axis.y, m.w_axis.y, // Second row
+            m.x_axis.z, m.y_axis.z, m.z_axis.z, m.w_axis.z, // Third row
         ]);
         let mesh = scene
             .meshes_storage
