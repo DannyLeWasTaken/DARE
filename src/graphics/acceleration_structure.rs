@@ -2,13 +2,14 @@
 //! Large parts thanks to: https://github.com/NotAPenguin0/Andromeda/blob/master/include/andromeda/graphics/backend/rtx.hpp
 #![warn(missing_docs)]
 
-use crate::asset;
+use crate::assets;
 use crate::utils::handle_storage::Handle;
 use crate::utils::memory;
 use crate::utils::types;
 use std::ops::Deref;
+use std::sync::{Arc, RwLock};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use phobos::domain::Compute;
 use phobos::{vk, AccelerationStructureType, ComputeCmdBuffer, IncompleteCmdBuffer};
@@ -34,7 +35,7 @@ pub struct AllocatedAS {
     name: Option<String>,
 
     /// Handle to the original mesh
-    mesh_handle: Option<Handle<asset::Mesh>>,
+    mesh_handle: Option<Handle<assets::mesh::Mesh>>,
 }
 
 /// Contains all the resources used by [`AllocatedAS`]
@@ -76,7 +77,7 @@ pub struct SceneAccelerationStructure {
     pub(crate) tlas: AccelerationStructure,
     pub(crate) blas: AccelerationStructure,
     pub(crate) instances: phobos::Buffer,
-    pub(crate) addresses: Vec<asset::CMesh>,
+    pub(crate) addresses: Vec<assets::mesh::CMesh>,
     pub(crate) addresses_buffer: Option<phobos::Buffer>,
 }
 
@@ -103,7 +104,7 @@ struct AccelerationStructureBuildInfo<'a> {
     transformation: glam::Mat4,
 
     /// Mesh handle
-    mesh_handle: Option<Handle<asset::Mesh>>,
+    mesh_handle: Option<Handle<assets::mesh::Mesh>>,
 }
 
 /// Gets the build information of the BLASes based off of the scene
@@ -112,22 +113,23 @@ struct AccelerationStructureBuildInfo<'a> {
 /// * The given mesh is not a triangle such as not having indices which are divisible by 3
 /// * Mesh stride is zero
 fn get_blas_entries<'a>(
-    meshes: &Vec<Handle<asset::Mesh>>,
-    scene: &asset::Scene,
+    meshes: &Vec<Handle<assets::mesh::Mesh>>,
+    scene: &assets::scene::Scene,
 ) -> Vec<(
     Result<phobos::AccelerationStructureBuildInfo<'a>>,
-    Handle<asset::Mesh>,
-    Option<asset::Mesh>,
+    Handle<assets::mesh::Mesh>,
+    Option<assets::mesh::Mesh>,
 )> {
     let mut build_infos: Vec<(
         Result<phobos::AccelerationStructureBuildInfo<'a>>,
-        Handle<asset::Mesh>,
-        Option<asset::Mesh>,
+        Handle<assets::mesh::Mesh>,
+        Option<assets::mesh::Mesh>,
     )> = Vec::with_capacity(meshes.len());
 
     for mesh_handle in meshes {
         let mesh = scene.meshes_storage.get_immutable(mesh_handle);
         if mesh.is_none() {
+            println!("Mesh not found!");
             build_infos.push((
                 Err(anyhow::anyhow!("No mesh found")),
                 mesh_handle.clone(),
@@ -140,6 +142,7 @@ fn get_blas_entries<'a>(
         let vertex_buffer = scene.attributes_storage.get_immutable(&mesh.vertex_buffer);
         let index_buffer = scene.attributes_storage.get_immutable(&mesh.index_buffer);
         if vertex_buffer.is_none() || index_buffer.is_none() {
+            println!("Failed to find vertex / index buffer");
             build_infos.push((
                 Err(anyhow::anyhow!("No vertex or index buffer found")),
                 mesh_handle.clone(),
@@ -152,7 +155,10 @@ fn get_blas_entries<'a>(
         let index_type = types::convert_scalar_format_to_index(index_buffer.format);
         if index_type.is_none() {
             build_infos.push((
-                Err(anyhow::anyhow!("No index type found")),
+                Err(anyhow::anyhow!(
+                    "No index type found. Found: {:?}",
+                    index_buffer.format
+                )),
                 mesh_handle.clone(),
                 Some(mesh.as_ref().clone()),
             ));
@@ -221,10 +227,11 @@ fn total_blas_memory(build_infos: &Vec<AccelerationStructureBuildInfo>) -> u64 {
 
 /// Create the acceleration structure itself alongside the buffers
 fn create_acceleration_structure(
-    ctx: &mut crate::app::Context,
+    ctx: Arc<RwLock<crate::app::Context>>,
     build_infos: &Vec<AccelerationStructureBuildInfo<'_>>,
 ) -> (AccelerationStructureResources, Vec<AllocatedAS>) {
     // Create memory for all the BLASes
+    let mut ctx = ctx.write().unwrap();
     let mut entries: Vec<AllocatedAS> = Vec::with_capacity(build_infos.len());
     let mut instances: Vec<phobos::AccelerationStructure> = Vec::with_capacity(build_infos.len());
     let buffer_size = total_blas_memory(build_infos);
@@ -306,7 +313,7 @@ fn create_acceleration_structure(
 
 /// Builds all the BLAS structures in the given BLAS
 fn build_blas(
-    ctx: &mut crate::app::Context,
+    ctx: Arc<RwLock<crate::app::Context>>,
     acceleration_structures_resource: &AccelerationStructureResources,
     entries: &[AllocatedAS],
     build_infos: Vec<AccelerationStructureBuildInfo>,
@@ -345,7 +352,8 @@ fn build_blas(
         })
         .collect::<Vec<phobos::AccelerationStructureBuildInfo>>();
 
-    let mut command = ctx
+    let ctx_read = ctx.read().unwrap();
+    let mut command = ctx_read
         .execution_manager
         .on_domain::<Compute>()?
         .build_acceleration_structures(build_infos.as_slice())?
@@ -364,7 +372,7 @@ fn build_blas(
         query_pool = Some(phobos::QueryPool::<
             phobos::AccelerationStructureCompactedSizeQuery,
         >::new(
-            ctx.device.clone(),
+            ctx_read.device.clone(),
             phobos::QueryPoolCreateInfo {
                 count: build_infos.len() as u32,
                 statistic_flags: None,
@@ -380,7 +388,7 @@ fn build_blas(
     // Indicate command submission is finished
     let command = command.finish()?;
 
-    ctx.execution_manager.submit(command)?.wait()?;
+    ctx_read.execution_manager.submit(command)?.wait()?;
 
     if let Some(mut query_pool) = query_pool {
         match query_pool.wait_for_all_results() {
@@ -394,7 +402,7 @@ fn build_blas(
 
 /// Create the final compacted acceleration structures
 fn compact_blases(
-    ctx: &mut crate::app::Context,
+    ctx: Arc<RwLock<crate::app::Context>>,
     as_resource: &AccelerationStructureResources,
     entries: &Vec<AllocatedAS>,
     mut compacted_sizes: Vec<u64>,
@@ -407,13 +415,15 @@ fn compact_blases(
         .collect::<Vec<u64>>();
     let total_compacted_size: u64 = compacted_sizes.iter().sum();
 
+    let mut ctx_read = ctx.write().unwrap();
     let compacted_buffer = phobos::Buffer::new_device_local(
-        ctx.device.clone(),
-        &mut ctx.allocator,
+        ctx_read.device.clone(),
+        &mut ctx_read.allocator,
         total_compacted_size,
     )
     .unwrap();
-    ctx.device
+    ctx_read
+        .device
         .set_name(&compacted_buffer, "BLAS Buffer")
         .unwrap();
 
@@ -425,7 +435,7 @@ fn compact_blases(
             .view(as_buffer_offset, *compacted_sizes.get(index).unwrap())
             .unwrap();
         let new_as = phobos::AccelerationStructure::new(
-            ctx.device.clone(),
+            ctx_read.device.clone(),
             phobos::AccelerationStructureType::BottomLevel,
             buffer_view,
             vk::AccelerationStructureCreateFlagsKHR::default(),
@@ -433,7 +443,7 @@ fn compact_blases(
         let new_as = new_as.unwrap();
         as_buffer_offset += buffer_view.size();
 
-        let cmd = ctx
+        let cmd = ctx_read
             .execution_manager
             .on_domain::<Compute>()
             .unwrap()
@@ -453,8 +463,14 @@ fn compact_blases(
             )
             .finish()
             .unwrap();
-        ctx.execution_manager.submit(cmd).unwrap().wait().unwrap();
-        ctx.device
+        ctx_read
+            .execution_manager
+            .submit(cmd)
+            .unwrap()
+            .wait()
+            .unwrap();
+        ctx_read
+            .device
             .set_name(
                 &new_as,
                 &format!(
@@ -485,13 +501,13 @@ fn compact_blases(
 
 /// Creates the instance buffer from all the created entries
 pub fn make_instances_buffer(
-    ctx: &mut crate::app::Context,
+    ctx: Arc<RwLock<crate::app::Context>>,
     as_resources: &AccelerationStructureResources,
-    scene: &asset::Scene,
+    scene: &assets::scene::Scene,
     entries: &Vec<AllocatedAS>,
-) -> (Result<phobos::Buffer>, Vec<asset::CMesh>) {
+) -> (Result<phobos::Buffer>, Vec<assets::mesh::CMesh>) {
     let mut instances: Vec<phobos::AccelerationStructureInstance> = Vec::new();
-    let mut bindless_mesh_info: Vec<asset::CMesh> = Vec::new();
+    let mut bindless_mesh_info: Vec<assets::mesh::CMesh> = Vec::new();
     let mut mesh_index: u32 = 0;
     for entry in entries {
         let m = entry.transformation.transpose();
@@ -502,7 +518,7 @@ pub fn make_instances_buffer(
         ]);
         let mesh = scene
             .meshes_storage
-            .get_immutable(&entry.mesh_handle.as_ref().unwrap())
+            .get_immutable(entry.mesh_handle.as_ref().unwrap())
             .unwrap();
         instances.push(
             phobos::AccelerationStructureInstance::default()
@@ -531,14 +547,15 @@ pub fn make_instances_buffer(
             .get_immutable(&mesh.index_buffer)
             .unwrap();
 
-        let get_buffer_address = |buffer: &Option<Handle<asset::AttributeView>>| -> u64 {
-            if let Some(buffer) = buffer {
-                if let Some(buffer) = scene.attributes_storage.get_immutable(buffer) {
-                    return buffer.buffer_view.address();
+        let get_buffer_address =
+            |buffer: &Option<Handle<assets::buffer_view::AttributeView<u8>>>| -> u64 {
+                if let Some(buffer) = buffer {
+                    if let Some(buffer) = scene.attributes_storage.get_immutable(buffer) {
+                        return buffer.buffer_view.address();
+                    }
                 }
-            }
-            return 0u64;
-        };
+                return 0u64;
+            };
 
         bindless_mesh_info.push(mesh.to_c_struct(scene));
         mesh_index += 1;
@@ -546,22 +563,28 @@ pub fn make_instances_buffer(
     }
 
     (
-        memory::make_transfer_buffer(ctx, instances.as_slice(), Some(16), "Instance Buffer"),
+        memory::make_transfer_buffer(
+            ctx.clone(),
+            instances.as_slice(),
+            Some(16),
+            "Instance Buffer",
+        ),
         bindless_mesh_info,
     )
 }
 
-/// Gets the build sizes with alignment included for the size and returns all the build sizes
+/// Gets the build sizes with alignment included for the Size and returns all the build sizes
 fn get_build_info_sizes(
-    ctx: &mut crate::app::Context,
+    ctx: Arc<RwLock<crate::app::Context>>,
     build_infos: &[AccelerationStructureBuildInfo],
     prim_counts: &[u32],
 ) -> Vec<Result<phobos::AccelerationStructureBuildSize>> {
     let mut sizes: Vec<Result<phobos::AccelerationStructureBuildSize>> = Vec::new();
     assert_eq!(prim_counts.len(), build_infos.len());
+    let ctx_read = ctx.read().unwrap();
     for (index, build_info) in build_infos.iter().enumerate() {
         sizes.push(phobos::query_build_size(
-            &ctx.device,
+            &ctx_read.device,
             phobos::AccelerationStructureBuildType::Device,
             &build_info.handle,
             &prim_counts[index..index + 1],
@@ -570,7 +593,8 @@ fn get_build_info_sizes(
     for size_info in sizes.iter_mut().flatten() {
         size_info.build_scratch_size = memory::align_size(
             size_info.build_scratch_size,
-            ctx.device
+            ctx_read
+                .device
                 .acceleration_structure_properties()
                 .unwrap()
                 .min_acceleration_structure_scratch_offset_alignment as u64,
@@ -583,7 +607,7 @@ fn get_build_info_sizes(
 
 /// Get the build sizes for each build_infos and bind it
 fn set_build_infos_sizes<'a>(
-    ctx: &mut crate::app::Context,
+    ctx: Arc<RwLock<crate::app::Context>>,
     build_infos: Vec<AccelerationStructureBuildInfo<'a>>,
     prim_counts: &[u32],
 ) -> Vec<Result<AccelerationStructureBuildInfo<'a>>> {
@@ -667,33 +691,35 @@ fn get_tlas_build_infos<'a>(
     out_vec
 }
 
-/// Gets the [`AccelerationStructure`] from the passed in [`asset::Scene`]
+/// Gets the [`AccelerationStructure`] from the passed in [`assets::Scene`]
 ///
 /// [`AccelerationStructure`]: AccelerationStructure
-/// [`asset::Scene`]: asset::Scene
+/// [`assets::Scene`]: assets::Scene
 pub fn create_blas_from_scene(
-    ctx: &mut crate::app::Context,
-    scene: &asset::Scene,
+    ctx: Arc<RwLock<crate::app::Context>>,
+    scene: &assets::scene::Scene,
     do_compaction: bool,
 ) -> AccelerationStructure {
     // Get build information from the scene
-    let meshes_selected: Vec<Handle<asset::Mesh>> = scene.meshes.clone();
+    let meshes_selected: Vec<Handle<assets::mesh::Mesh>> = scene.meshes.clone();
     let mut blas_build_infos: Vec<AccelerationStructureBuildInfo> =
         get_blas_entries(&meshes_selected, scene)
             .into_iter()
-            .filter_map(|(x, mesh_handle, mesh)| {
-                if let Ok(x) = x {
-                    Some(AccelerationStructureBuildInfo {
-                        handle: x,
-                        size_info: None,
-                        buffer_offset: 0,
-                        scratch_offset: 0,
-                        name: (mesh.as_ref().unwrap()).name.clone(),
-                        transformation: mesh.as_ref().unwrap().transform,
-                        mesh_handle: Some(mesh_handle),
-                    })
-                } else {
-                    println!("[acceleration_structure]: Failed to load mesh properly");
+            .filter_map(|(x, mesh_handle, mesh)| match x {
+                Ok(x) => Some(AccelerationStructureBuildInfo {
+                    handle: x,
+                    size_info: None,
+                    buffer_offset: 0,
+                    scratch_offset: 0,
+                    name: (mesh.as_ref().unwrap()).name.clone(),
+                    transformation: mesh.as_ref().unwrap().transform,
+                    mesh_handle: Some(mesh_handle),
+                }),
+                Err(E) => {
+                    println!(
+                        "[acceleration_structure]: Failed to load mesh properly: {:?}",
+                        E
+                    );
                     None
                 }
             })
@@ -715,14 +741,15 @@ pub fn create_blas_from_scene(
         .collect::<Vec<u32>>();
 
     // Fill in size_info about the build
-    blas_build_infos = set_build_infos_sizes(ctx, blas_build_infos, primitive_counts.as_slice())
-        .into_iter()
-        .filter_map(|build_info| {
-            build_info
-                .map_err(|e| println!("Failed to bind size_info due to: {}", e))
-                .ok()
-        })
-        .collect::<Vec<AccelerationStructureBuildInfo>>();
+    blas_build_infos =
+        set_build_infos_sizes(ctx.clone(), blas_build_infos, primitive_counts.as_slice())
+            .into_iter()
+            .filter_map(|build_info| {
+                build_info
+                    .map_err(|e| println!("Failed to bind size_info due to: {}", e))
+                    .ok()
+            })
+            .collect::<Vec<AccelerationStructureBuildInfo>>();
     // Suballocate the BLAS with known pre-compact sizes
     blas_build_infos = suballocate_build_infos(blas_build_infos)
         .into_iter()
@@ -740,10 +767,10 @@ pub fn create_blas_from_scene(
 
     // Creates the acceleration structures
     let (mut as_resources, mut allocated_structures) =
-        create_acceleration_structure(ctx, &blas_build_infos);
+        create_acceleration_structure(ctx.clone(), &blas_build_infos);
     // Builds BLAS with compact
     let compact_sizes = build_blas(
-        ctx,
+        ctx.clone(),
         &as_resources,
         &allocated_structures,
         blas_build_infos,
@@ -775,17 +802,21 @@ pub fn create_blas_from_scene(
 /// This function will panic if:
 /// * The number of BLAS [`AllocatedAS`] is not the same as the number of instances
 pub fn create_tlas(
-    ctx: &mut crate::app::Context,
-    scene: &asset::Scene,
+    ctx: Arc<RwLock<crate::app::Context>>,
+    scene: &assets::scene::Scene,
     blas: &AccelerationStructure,
-) -> Result<(AccelerationStructure, phobos::Buffer, Vec<asset::CMesh>)> {
+) -> Result<(
+    AccelerationStructure,
+    phobos::Buffer,
+    Vec<assets::mesh::CMesh>,
+)> {
     assert_eq!(
         blas.resources.acceleration_structures.len(),
         blas.instances.len(),
-        "BLAS stored structures is not the same size that the number of instances"
+        "BLAS stored structures is not the same Size that the number of instances"
     );
     let (instance_buffer, bindless_meshes) =
-        make_instances_buffer(ctx, &blas.resources, scene, &blas.instances);
+        make_instances_buffer(ctx.clone(), &blas.resources, scene, &blas.instances);
     let instance_buffer = instance_buffer
         .map_err(|e| {
             println!(
@@ -798,19 +829,23 @@ pub fn create_tlas(
     // Get TLAS build information
     let mut tlas_build_infos =
         get_tlas_build_infos(&[&instance_buffer], &[blas.instances.len() as u32]);
-    tlas_build_infos = set_build_infos_sizes(ctx, tlas_build_infos, &[blas.instances.len() as u32])
-        .into_iter()
-        .filter_map(|build_info| {
-            build_info
-                .map_err(|e| {
-                    println!(
-                        "[acceleration_structure]: Failed to make TLAS due to: {}",
-                        e
-                    )
-                })
-                .ok()
-        })
-        .collect::<Vec<AccelerationStructureBuildInfo>>();
+    tlas_build_infos = set_build_infos_sizes(
+        ctx.clone(),
+        tlas_build_infos,
+        &[blas.instances.len() as u32],
+    )
+    .into_iter()
+    .filter_map(|build_info| {
+        build_info
+            .map_err(|e| {
+                println!(
+                    "[acceleration_structure]: Failed to make TLAS due to: {}",
+                    e
+                )
+            })
+            .ok()
+    })
+    .collect::<Vec<AccelerationStructureBuildInfo>>();
     // suballocate build information (pretty useless, but just in case)
     tlas_build_infos = suballocate_build_infos(tlas_build_infos)
         .into_iter()
@@ -822,7 +857,7 @@ pub fn create_tlas(
         .collect::<Vec<AccelerationStructureBuildInfo>>();
 
     let (as_resources, allocated_structures) =
-        create_acceleration_structure(ctx, &tlas_build_infos);
+        create_acceleration_structure(ctx.clone(), &tlas_build_infos);
     // Assign the as and scratch address
     let mut tlas_build_info: AccelerationStructureBuildInfo = tlas_build_infos.remove(0);
     tlas_build_info.handle = tlas_build_info
@@ -836,7 +871,8 @@ pub fn create_tlas(
         .scratch_data(as_resources.scratch.as_ref().unwrap().address());
 
     // Submit tlas commands
-    let command = ctx
+    let ctx_read = ctx.read().unwrap();
+    let command = ctx_read
         .execution_manager
         .on_domain::<Compute>()
         .unwrap()
@@ -848,7 +884,7 @@ pub fn create_tlas(
         )
         .build_acceleration_structure(&tlas_build_info.handle)?
         .finish()?;
-    ctx.execution_manager.submit(command)?.wait()?;
+    ctx_read.execution_manager.submit(command)?.wait()?;
     Ok((
         AccelerationStructure {
             resources: as_resources,
@@ -860,20 +896,26 @@ pub fn create_tlas(
 }
 
 pub fn convert_scene_to_blas(
-    ctx: &mut crate::app::Context,
-    scene: &asset::Scene,
+    ctx: Arc<RwLock<crate::app::Context>>,
+    scene: &assets::scene::Scene,
 ) -> SceneAccelerationStructure {
     println!(
         "[acceleration_structure]: Scene has total # of meshes: {}",
         scene.meshes.len()
     );
     let do_compaction: bool = true; // Whether or not to do compaction
-    let blas: AccelerationStructure = create_blas_from_scene(ctx, scene, do_compaction);
+    let blas: AccelerationStructure = create_blas_from_scene(ctx.clone(), scene, do_compaction);
     let (tlas, tlas_instance_buffer, bindless_meshes) =
-        create_tlas(ctx, scene, &blas).expect("Failed to build TLAS");
+        create_tlas(ctx.clone(), scene, &blas).expect("Failed to build TLAS");
+    let address_buffer = memory::make_transfer_buffer(
+        ctx.clone(),
+        bindless_meshes.as_slice(),
+        None,
+        "Object description",
+    )
+    .unwrap();
     let address_buffer =
-        memory::make_transfer_buffer(ctx, bindless_meshes.as_slice(), None, "Object description")
-            .unwrap();
+        memory::copy_buffer_to_gpu_buffer(ctx.clone(), address_buffer, "Addresses").unwrap();
 
     SceneAccelerationStructure {
         tlas,

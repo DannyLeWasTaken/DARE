@@ -1,8 +1,17 @@
-pub mod gltf_asset_loader;
+pub mod buffer;
+pub mod buffer_view;
+pub mod data_source;
+pub mod gltf_asset_loader2;
+pub mod image;
+pub mod loader;
+pub mod material;
+pub mod mesh;
+pub mod scene;
+pub mod texture;
+mod utils;
 
 use crate::utils::handle_storage::{Handle, Storage};
-use std::collections::HashMap;
-use std::sync::Arc;
+use crevice::std430::{self, AsStd430};
 
 /// Similar to phobos' [`BufferView`], however it includes additional information about
 /// the attributes
@@ -25,7 +34,7 @@ pub struct AttributeView {
     pub component_size: u64,
 }
 
-/// An object that holds information about the Mesh object in a scene and its' resource
+/// An object that holds information about the Mesh object in a scene and its' resources
 /// [`handles`]
 ///
 /// [`handles`]: Handle
@@ -71,11 +80,13 @@ impl Mesh {
                 .unwrap_or(0u64),
             normal_buffer: self
                 .normal_buffer
+                .clone()
                 .and_then(|buffer| scene.attributes_storage.get_immutable(&buffer))
                 .map(|x| x.buffer_view.address())
                 .unwrap_or(0u64),
             tex_buffer: self
                 .tex_buffer
+                .clone()
                 .and_then(|buffer| scene.attributes_storage.get_immutable(&buffer))
                 .map(|x| x.buffer_view.address())
                 .unwrap_or(0u64),
@@ -142,4 +153,7 @@ pub struct Scene {
     pub attributes: Vec<Handle<AttributeView>>,
     pub textures: Vec<Handle<Texture>>,
     pub materials: Vec<Handle<Material>>,
+    pub material_buffer: Option<phobos::Buffer>,
 }
+
+pub trait Asset {}

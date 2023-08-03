@@ -18,8 +18,8 @@ pub struct Camera {
 
 impl Camera {
     pub fn new() -> Self {
-        let position = glam::Vec3::new(0.0, 0.0, 0.0);
         let front = glam::Vec3::new(0.0, 0.0, -1.0);
+        let position = glam::Vec3::new(0.0, 0.0, 0.0);
         let up = glam::Vec3::new(0.0, 1.0, 0.0);
 
         Self {
@@ -32,7 +32,7 @@ impl Camera {
             view: glam::Mat4::look_at_rh(position, position + front, up),
             speed: 16.0,
             pitch: 0.0,
-            yaw: 90.0,
+            yaw: 0.0,
         }
     }
 
@@ -48,8 +48,9 @@ impl Camera {
         self.up = glam::Vec3::normalize(glam::Vec3::cross(self.right, self.front));
 
         let look_at: glam::Mat4 =
-            glam::Mat4::look_at_rh(self.position, self.position + self.front, self.world_up);
+            glam::Mat4::look_at_rh(self.position, self.position + self.front, self.up);
         self.view = look_at;
+        println!("{}", self.position);
 
         look_at
     }

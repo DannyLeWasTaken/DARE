@@ -2,6 +2,7 @@
 //! built into them. These are useful to pass around to reference meshes. The Storage component
 //! allows them to be managed safely with more explicit garbage collection and thread safety.
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, Weak};
@@ -21,7 +22,7 @@ static ATOMIC_STORAGE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 ///
 /// [`Handle<T>`]: Handle
 /// [`Storage<T>`]: Storage
-#[derive(Copy, Hash, Default)]
+#[derive(Default)]
 pub struct Handle<T: ?Sized> {
     /// Index in the `Storage<T>`'s `storage` HashMap.
     index: usize,
@@ -60,12 +61,27 @@ impl<T> Clone for Handle<T> {
     }
 }
 
+impl<T: ?Sized> Hash for Handle<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.index.hash(state);
+        self.handle_id.hash(state);
+        self.storage_id.hash(state);
+    }
+}
+
 impl<T> Handle<T> {
     pub fn get_handle_id(&self) -> usize {
         self.handle_id
     }
 
-    /// Get the data
+    /// Get the data the handle references through a [`Weak<T>`] pointer
+    /// # Warning
+    /// This really should not be used and should be avoided. [`Weak<T>`] pointers do provide some
+    /// safety with [`Weak::upgrade`], but you should really be using [`&Storage<T>`]
+    ///
+    /// [`Arc::upgrade`]: Weak::upgrade
+    /// [`Weak<T>`]: Weak
+    /// [`&Storage<T>`]: Storage<T>
     pub fn get_data(&self) -> Weak<T> {
         self.data.clone()
     }

@@ -85,7 +85,7 @@ impl Runner {
             .name(name)
             .validation(true)
             .present_mode(phobos::vk::PresentModeKHR::MAILBOX)
-            .scratch_size(1 * 1024u64)
+            .scratch_size(64 * 1024u64)
             .gpu(phobos::GPURequirements {
                 dedicated: false,
                 min_video_memory: 1 * 1024 * 1024 * 1024, // 1 GiB

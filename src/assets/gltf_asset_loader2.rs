@@ -1,16 +1,19 @@
-//! Asset loaders for Gltf
-use crate::assets::gltf_asset_loader::GltfAssetLoader;
+//! Asset loader for Gltf
 use crate::assets::AttributeView;
-use crate::utils;
 use crate::utils::handle_storage::{Handle, Storage};
 use crate::utils::memory;
+use crate::utils::memory::make_transfer_buffer;
 use crate::{app, assets};
 use anyhow::Result;
 use ash::vk;
+use ash::vk::Format;
 use gltf;
 use gltf::json::validation::Checked;
+use phobos::{IncompleteCmdBuffer, TransferCmdBuffer};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufReader, Read};
+use std::ptr;
+use std::sync::{Arc, RwLock};
 
 /// Context containing any necessary data and/or information about the struct
 pub struct GltfContext;
@@ -23,7 +26,6 @@ mod loader_structs {
         pub data: Option<Vec<u8>>,
         pub index: usize,
         pub format: AccessorSemantic,
-        pub dimension:
     }
     pub struct VBufferViewer {}
     pub struct VAccessor {}
@@ -31,7 +33,7 @@ mod loader_structs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum AccessorSemantic {
+pub enum AccessorSemantic {
     Gltf(gltf::Semantic),
     Index,
 }
@@ -120,10 +122,12 @@ impl GltfContext {
     /// 3. Load scene & generate buffers -> Load in all data and generate the necessary buffers
     /// this will also process any data and transform them into the necessary types
     /// 4. Create handles & upload to host
-    pub fn load_scene(ctx: &mut app::Context, path: &std::path::Path) -> Result<assets::Scene> {
+    pub fn load_scene(
+        ctx: Arc<RwLock<app::Context>>,
+        path: &std::path::Path,
+    ) -> Result<assets::Scene> {
         let (document, gltf_buffers_content, gltf_images_content) = gltf::import(path)?;
         let mut document = document.into_json();
-
         // Load meshes after flattening them
         let mut gltf_meshes: Vec<(gltf::json::Mesh, usize, glam::Mat4)> =
             GltfContext::flatten_scene_meshes(
@@ -178,37 +182,51 @@ impl GltfContext {
                     loader_structs::Buffer {
                         data: GltfContext::access_accessor_contents(
                             &document,
-                            document
-                                .accessors
-                                .get(gltf_primitive.indices.unwrap().value())
-                                .unwrap(),
+                            &document.accessors[gltf_primitive.indices.unwrap().value()],
                             &gltf_buffers_content,
                         ),
                         index: primitive_buffers.len(),
-                        format: Semantic::Positions,
+                        format: AccessorSemantic::Index,
                     },
                 );
+                document.accessors[gltf_primitive.indices.unwrap().value()].name = Some(format!(
+                    "{} {} {:?}",
+                    gltf_mesh.name.clone().unwrap_or("Unnamed".parse()?),
+                    primitive_index,
+                    AccessorSemantic::Index,
+                ));
                 for (semantic, accessor_index) in gltf_primitive.attributes.iter() {
                     if let Some(accessor) = document.accessors.get(accessor_index.value()) {
                         if let Checked::Valid(semantic) = semantic {
                             if let Some(view_index) = accessor.buffer_view {
-                                let view = document.buffer_views.get(view_index.value()).unwrap();
+                                let view = &document.buffer_views[view_index.value()];
                                 match semantic {
                                     gltf::Semantic::Positions
                                     | gltf::Semantic::Normals
                                     | gltf::Semantic::TexCoords(0) => {
+                                        // Accessors
                                         primitive_buffers.insert(
                                             AccessorSemantic::Gltf(semantic.clone()),
                                             loader_structs::Buffer {
                                                 data: GltfContext::access_accessor_contents(
-                                                & document,
-                                                accessor,
-                                                &gltf_buffers_content,
+                                                    &document,
+                                                    accessor,
+                                                    &gltf_buffers_content,
                                                 ),
                                                 index: primitive_buffers.len(),
-                                                format: AccessorSemantic::Gltf(semantic.clone())
+                                                format: AccessorSemantic::Gltf(semantic.clone()),
                                             },
                                         );
+                                        document
+                                            .accessors
+                                            .get_mut(accessor_index.value())
+                                            .unwrap()
+                                            .name = Some(format!(
+                                            "{} {} {:?}",
+                                            gltf_mesh.name.clone().unwrap_or("Unnamed".parse()?),
+                                            primitive_index,
+                                            AccessorSemantic::Gltf(semantic.clone())
+                                        ));
                                     }
                                     _ => {}
                                 }
@@ -225,28 +243,40 @@ impl GltfContext {
                 }
                 {
                     // Convert all indices to u32
-                    let mut index_buffer = primitive_buffers.get_mut(&AccessorSemantic::Index).unwrap();
-                    let indices: &[u16] = bytemuck::cast_slice(primitive_buffers.get(&AccessorSemantic::Index).unwrap().data.unwrap().as_slice());
-                    index_buffer.data = Some(bytemuck::bytes_of(&indices.into_iter().map(|x| {
-                        *x as u32
-                    }).collect::<Vec<u32>>()).to_vec());
+                    let mut index_buffer =
+                        primitive_buffers.get_mut(&AccessorSemantic::Index).unwrap();
+                    println!("Index is: {:?}", index_buffer.format);
+                    let indices: &[u16] =
+                        bytemuck::cast_slice(index_buffer.data.as_ref().unwrap().as_slice());
+                    index_buffer.data = Some(
+                        bytemuck::cast_slice(
+                            &indices.iter().map(|x| *x as u32).collect::<Vec<u32>>(),
+                        )
+                        .to_vec(),
+                    );
                 }
 
+                // Generate normal buffer if normal exists, if not stop.
                 if primitive_buffers
                     .get(&AccessorSemantic::Gltf(gltf::Semantic::Normals))
-                    .is_none()
+                    .is_some()
                 {
+                    println!("Generating normals!");
                     // We can generate this one
-                    let vertex_buffer = primitive_buffers.get(&AccessorSemantic::Gltf(gltf::Semantic::Positions)).unwrap();
-                    let index_buffer = primitive_buffers.get(&AccessorSemantic::Index).unwrap();
-                    let vertices: &[f32] = bytemuck::cast_slice(vertex_buffer.data.unwrap().as_slice());
-                    let indices: &[u32] = bytemuck::cast_slice(index_buffer.data.unwrap().as_slice());
+                    let vertex_buffer =
+                        &primitive_buffers[&AccessorSemantic::Gltf(gltf::Semantic::Positions)];
+                    let index_buffer = &primitive_buffers[&AccessorSemantic::Index];
+                    let vertices: &[f32] =
+                        bytemuck::cast_slice(vertex_buffer.data.as_ref().unwrap().as_slice());
+                    let indices: &[u32] =
+                        bytemuck::cast_slice(index_buffer.data.as_ref().unwrap().as_slice());
                     let vertices = vertices
                         .chunks(3)
                         .map(|chunk| glam::Vec3::new(chunk[0], chunk[1], chunk[2]))
                         .collect::<Vec<glam::Vec3>>();
-                    let generated_normal_buffer = assets::utils::calculate_normals(&vertices, indices);
-
+                    let generated_normal_buffer =
+                        assets::utils::calculate_normals(&vertices, &indices.to_vec());
+                    let normal_count = generated_normal_buffer.len();
                     let mut bytes: Vec<u8> = Vec::with_capacity(generated_normal_buffer.len() * 12);
                     for normal in generated_normal_buffer.into_iter() {
                         bytes.extend_from_slice(&normal.x.to_ne_bytes());
@@ -284,7 +314,12 @@ impl GltfContext {
                         type_: Checked::Valid(gltf::json::accessor::Type::Vec3),
                         min: None,
                         max: None,
-                        name: None,
+                        name: Some(format!(
+                            "{} {} {:?}",
+                            gltf_mesh.name.clone().unwrap_or("Unnamed".parse()?),
+                            primitive_index,
+                            AccessorSemantic::Gltf(gltf::Semantic::Normals)
+                        )),
                         normalized: false,
                         sparse: None,
                     });
@@ -292,35 +327,59 @@ impl GltfContext {
                         Checked::Valid(gltf::Semantic::Normals),
                         gltf::json::Index::new((document.accessors.len() - 1) as u32),
                     );
-                    normal_buffer = Some(bytes);
+                    primitive_buffers.insert(
+                        AccessorSemantic::Gltf(gltf::Semantic::Normals),
+                        loader_structs::Buffer {
+                            data: Some(bytes),
+                            index: primitive_buffers.len(),
+                            format: AccessorSemantic::Gltf(gltf::Semantic::Normals),
+                        },
+                    );
                 }
-                // Put buffers into monolithic global buffers
+                // Put buffers into monolithic scene buffers
                 scene_buffers
                     .get_mut(&AccessorSemantic::Index)
                     .unwrap()
-                    .insert(primitive_index, index_buffer.clone());
+                    .insert(
+                        primitive_index,
+                        primitive_buffers[&AccessorSemantic::Index].data.clone(),
+                    );
                 scene_buffers
                     .get_mut(&AccessorSemantic::Gltf(gltf::Semantic::Positions))
                     .unwrap()
-                    .insert(primitive_index, vertex_buffer);
+                    .insert(
+                        primitive_index,
+                        primitive_buffers[&AccessorSemantic::Gltf(gltf::Semantic::Positions)]
+                            .data
+                            .clone(),
+                    );
                 scene_buffers
                     .get_mut(&AccessorSemantic::Gltf(gltf::Semantic::Normals))
                     .unwrap()
-                    .insert(primitive_index, normal_buffer);
-                scene_buffers
-                    .get_mut(&AccessorSemantic::Gltf(gltf::Semantic::TexCoords(0)))
-                    .unwrap()
-                    .insert(primitive_index, tex_buffer);
+                    .insert(
+                        primitive_index,
+                        primitive_buffers[&AccessorSemantic::Gltf(gltf::Semantic::Normals)]
+                            .data
+                            .clone(),
+                    );
+                if let Some(primitive_buffer) =
+                    primitive_buffers.get(&AccessorSemantic::Gltf(gltf::Semantic::TexCoords(0)))
+                {
+                    scene_buffers
+                        .get_mut(&AccessorSemantic::Gltf(gltf::Semantic::TexCoords(0)))
+                        .unwrap()
+                        .insert(primitive_index, primitive_buffer.data.clone());
+                }
             }
         }
 
-        // Upload all data into buffers
+        // Upload all data into host
         let mut scene_buffer_offsets: HashMap<AccessorSemantic, usize> = HashMap::new();
         let mut monolithic_buffer: Vec<u8> = Vec::new();
         {
             let mut buffer_offsets: usize = 0;
             for (semantic, scene_buffer) in scene_buffers.iter() {
-                scene_buffer_offsets.insert(semantic.clone(), buffer_offsets);
+                scene_buffer_offsets.insert(semantic.clone(), monolithic_buffer.len());
                 for (index, buffer) in scene_buffer {
                     if let Some(buffer) = buffer {
                         buffer_offsets += buffer.len();
@@ -329,9 +388,13 @@ impl GltfContext {
                 }
             }
         }
-        let scene_buffer =
-            memory::make_transfer_buffer(ctx, monolithic_buffer.as_slice(), None, "Scene buffer")
-                .expect("Failed to allocate scene buffer");
+        let monolithic_buffer = make_transfer_buffer(
+            ctx.clone(),
+            monolithic_buffer.as_slice(),
+            None,
+            "Scene buffer",
+        )
+        .expect("Failed to allocate scene buffer");
 
         // Create scene struct
         let mut asset_scene: assets::Scene = assets::Scene {
@@ -353,11 +416,224 @@ impl GltfContext {
         };
         asset_scene
             .buffers
-            .push(asset_scene.buffer_storage.insert(scene_buffer));
+            .push(asset_scene.buffer_storage.insert(monolithic_buffer));
         let scene_buffer = asset_scene
             .buffer_storage
             .get_immutable(asset_scene.buffers.first().unwrap())
             .unwrap();
+        // Load images
+        let mut transfer_images: Vec<(phobos::Buffer, phobos::Image)> = Vec::new();
+
+        // Load images first
+        for (index, image) in document.images.iter().enumerate() {
+            let image_data = gltf_images_content.get(index).unwrap();
+            let pixels = GltfContext::convert_image_types_to_rgba(
+                image_data.format,
+                gltf_images_content.get(index).unwrap().pixels.as_slice(),
+            );
+            let transfer_buffer = make_transfer_buffer(
+                ctx.clone(),
+                pixels.as_slice(),
+                None,
+                image
+                    .name
+                    .as_deref()
+                    .unwrap_or(format!("Unnamed Image {}", index).as_str()),
+            )
+            .unwrap();
+            let mut ctx_write = ctx.write().unwrap();
+            let image_phobos = phobos::Image::new(
+                ctx_write.device.clone(),
+                &mut ctx_write.allocator,
+                phobos::image::ImageCreateInfo {
+                    width: image_data.width,
+                    height: image_data.height,
+                    depth: 1,
+                    usage: vk::ImageUsageFlags::TRANSFER_SRC
+                        | vk::ImageUsageFlags::TRANSFER_DST
+                        | vk::ImageUsageFlags::SAMPLED,
+                    format: get_image_type_rgba(image_data.format).unwrap(),
+                    samples: vk::SampleCountFlags::TYPE_1,
+                    mip_levels: 1,
+                    layers: 1,
+                },
+            )
+            .unwrap();
+            transfer_images.push((transfer_buffer, image_phobos));
+        }
+        // Submit execution for image transfers
+        {
+            let ctx_read = ctx.read().unwrap();
+            let temp_exec_manager = ctx_read.execution_manager.clone();
+            let mut image_commands = temp_exec_manager
+                .on_domain::<phobos::domain::Graphics>()
+                .unwrap();
+            for (staging_buffer, image) in transfer_images.iter() {
+                // Transition layout
+                {
+                    let src_access_mask = vk::AccessFlags2::empty();
+                    let dst_access_mask = vk::AccessFlags2::TRANSFER_WRITE;
+                    let source_stage = vk::PipelineStageFlags2::TOP_OF_PIPE;
+                    let destination_stage = vk::PipelineStageFlags2::TRANSFER;
+
+                    let image_barrier = vk::ImageMemoryBarrier2 {
+                        s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
+                        p_next: ptr::null(),
+                        src_stage_mask: source_stage,
+                        src_access_mask,
+                        dst_stage_mask: destination_stage,
+                        dst_access_mask,
+                        old_layout: vk::ImageLayout::UNDEFINED,
+                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                        dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                        image: unsafe { image.handle() },
+                        subresource_range: vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        },
+                    };
+
+                    image_commands = image_commands.pipeline_barrier(&vk::DependencyInfo {
+                        s_type: vk::StructureType::DEPENDENCY_INFO,
+                        p_next: ptr::null(),
+                        dependency_flags: vk::DependencyFlags::empty(),
+                        memory_barrier_count: 0,
+                        p_memory_barriers: ptr::null(),
+                        buffer_memory_barrier_count: 0,
+                        p_buffer_memory_barriers: ptr::null(),
+                        image_memory_barrier_count: 1,
+                        p_image_memory_barriers: &image_barrier.clone(),
+                    });
+                }
+
+                image_commands = image_commands
+                    .copy_buffer_to_image(
+                        &staging_buffer.view_full(),
+                        &image.whole_view(vk::ImageAspectFlags::COLOR).unwrap(),
+                    )
+                    .unwrap();
+
+                image_commands = image_commands.memory_barrier(
+                    vk::PipelineStageFlags2::TRANSFER,
+                    vk::AccessFlags2::TRANSFER_WRITE,
+                    vk::PipelineStageFlags2::TRANSFER,
+                    vk::AccessFlags2::TRANSFER_READ,
+                );
+
+                // Mipmap barrier
+                let mut image_barrier = vk::ImageMemoryBarrier2 {
+                    s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
+                    p_next: ptr::null(),
+                    src_stage_mask: vk::PipelineStageFlags2::BLIT
+                        | vk::PipelineStageFlags2::TRANSFER,
+                    src_access_mask: vk::AccessFlags2::empty(),
+                    dst_stage_mask: vk::PipelineStageFlags2::BLIT
+                        | vk::PipelineStageFlags2::TRANSFER,
+                    dst_access_mask: vk::AccessFlags2::empty(),
+                    old_layout: vk::ImageLayout::UNDEFINED,
+                    new_layout: vk::ImageLayout::UNDEFINED,
+                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    image: unsafe { image.handle() },
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                };
+            }
+
+            // Submit image transfers for submission
+            ctx_read
+                .execution_manager
+                .submit(image_commands.finish().unwrap())
+                .unwrap()
+                .wait()
+                .unwrap();
+
+            for (buffer, image) in transfer_images {
+                asset_scene
+                    .images
+                    .push(asset_scene.image_storage.insert(image));
+            }
+        }
+
+        // Load textures
+        // Create a universal sampler
+        {
+            let ctx_read = ctx.read().unwrap();
+            asset_scene.samplers.push(
+                asset_scene.sampler_storage.insert(
+                    phobos::Sampler::new(
+                        ctx_read.device.clone(),
+                        vk::SamplerCreateInfo {
+                            mag_filter: vk::Filter::LINEAR,
+                            min_filter: vk::Filter::LINEAR,
+                            mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                            address_mode_u: vk::SamplerAddressMode::REPEAT,
+                            address_mode_v: vk::SamplerAddressMode::REPEAT,
+                            address_mode_w: vk::SamplerAddressMode::REPEAT,
+                            mip_lod_bias: 0.0,
+                            anisotropy_enable: vk::FALSE,
+                            max_anisotropy: 16.0,
+                            compare_enable: vk::FALSE,
+                            compare_op: vk::CompareOp::ALWAYS,
+                            min_lod: 0.0,
+                            max_lod: vk::LOD_CLAMP_NONE,
+                            border_color: vk::BorderColor::INT_OPAQUE_BLACK,
+                            unnormalized_coordinates: vk::FALSE,
+                            ..std::default::Default::default()
+                        },
+                    )
+                    .unwrap(),
+                ),
+            );
+        }
+
+        for (index, texture) in document.textures.iter().enumerate() {
+            asset_scene.textures.push(
+                asset_scene.texture_storage.insert(assets::Texture {
+                    name: Option::from(
+                        texture
+                            .name
+                            .clone()
+                            .unwrap_or(format!("Unnamed texture {}", index)),
+                    ),
+                    source: asset_scene.images[texture.source.value()].clone(),
+                    sampler: asset_scene.samplers.get(0).unwrap().clone(),
+                }),
+            );
+        }
+
+        // Load materials
+        for material in document.materials.iter() {
+            let pbr = material.pbr_metallic_roughness.clone();
+            let albedo_texture = pbr
+                .base_color_texture
+                .as_ref()
+                .and_then(|x| asset_scene.textures.get(x.index.value()).cloned())
+                .clone();
+            if albedo_texture.is_none() {
+                println!(
+                    "No albedo texture found! Expected one at: {:?}",
+                    pbr.base_color_texture
+                        .and_then(|x| Option::from(x.index.value() as i32))
+                        .unwrap_or(999i32)
+                );
+            }
+            asset_scene
+                .materials
+                .push(asset_scene.material_storage.insert(assets::Material {
+                    albedo_texture,
+                    albedo_color: glam::Vec3::from_slice(pbr.base_color_factor.0.as_slice()),
+                }));
+        }
 
         // Update accessors to reflect the compacted changes
         primitive_index = 0;
@@ -404,6 +680,7 @@ impl GltfContext {
                             &scene_buffer_offsets,
                             accessor,
                             &AccessorSemantic::Index,
+                            vk::Format::R32_UINT,
                         );
                         primitive_accessors.insert(AccessorSemantic::Index, attribute);
                     }
@@ -413,10 +690,11 @@ impl GltfContext {
                         if let (Checked::Valid(valid_index), valid_attribute) =
                             (valid_index, valid_attribute)
                         {
+                            use gltf::json::accessor::{ComponentType, Type};
                             if let (
                                 &gltf::Semantic::Positions
                                 | &gltf::Semantic::Normals
-                                | &gltf::Semantic::TexCoords(_),
+                                | &gltf::Semantic::TexCoords(0),
                                 attribute,
                             ) = (valid_index, valid_attribute)
                             {
@@ -429,13 +707,86 @@ impl GltfContext {
                                     &scene_buffer_offsets,
                                     &accessor,
                                     &AccessorSemantic::Gltf(valid_index.clone()),
+                                    match (
+                                        accessor.component_type.unwrap().0,
+                                        accessor.type_.unwrap(),
+                                    ) {
+                                        (ComponentType::F32, Type::Vec4) => {
+                                            vk::Format::R32G32B32A32_SFLOAT
+                                        }
+                                        (ComponentType::F32, Type::Vec3) => {
+                                            vk::Format::R32G32B32_SFLOAT
+                                        }
+                                        (ComponentType::F32, Type::Vec2) => {
+                                            vk::Format::R32G32_SFLOAT
+                                        }
+                                        (ComponentType::F32, Type::Scalar) => {
+                                            vk::Format::R32_SFLOAT
+                                        }
+
+                                        (ComponentType::U32, Type::Vec4) => {
+                                            vk::Format::R32G32B32A32_UINT
+                                        }
+                                        (ComponentType::U32, Type::Vec3) => {
+                                            vk::Format::R32G32B32_UINT
+                                        }
+                                        (ComponentType::U32, Type::Vec2) => vk::Format::R32G32_UINT,
+                                        (ComponentType::U32, Type::Scalar) => vk::Format::R32_UINT,
+
+                                        (ComponentType::U16, Type::Vec4) => {
+                                            vk::Format::R16G16B16A16_UINT
+                                        }
+                                        (ComponentType::U16, Type::Vec3) => {
+                                            vk::Format::R16G16B16_UINT
+                                        }
+                                        (ComponentType::U16, Type::Vec2) => vk::Format::R16G16_UINT,
+                                        (ComponentType::U16, Type::Scalar) => vk::Format::R16_UINT,
+
+                                        (ComponentType::U8, Type::Vec4) => {
+                                            vk::Format::R8G8B8A8_UINT
+                                        }
+                                        (ComponentType::U8, Type::Vec3) => vk::Format::R8G8B8_UINT,
+                                        (ComponentType::U8, Type::Vec2) => vk::Format::R8G8_UINT,
+                                        (ComponentType::U8, Type::Scalar) => vk::Format::R16_UINT,
+
+                                        (ComponentType::I16, Type::Vec4) => {
+                                            vk::Format::R16G16B16A16_SINT
+                                        }
+                                        (ComponentType::I16, Type::Vec3) => {
+                                            vk::Format::R16G16B16_SINT
+                                        }
+                                        (ComponentType::I16, Type::Vec2) => vk::Format::R16G16_SINT,
+                                        (ComponentType::I16, Type::Scalar) => vk::Format::R16_SINT,
+
+                                        (ComponentType::I8, Type::Vec4) => {
+                                            vk::Format::R8G8B8A8_SINT
+                                        }
+                                        (ComponentType::I8, Type::Vec3) => vk::Format::R8G8B8_SINT,
+                                        (ComponentType::I8, Type::Vec2) => vk::Format::R8G8_SINT,
+                                        (ComponentType::I8, Type::Scalar) => vk::Format::R8_SINT,
+
+                                        _ => vk::Format::UNDEFINED,
+                                    },
                                 );
                                 primitive_accessors
                                     .insert(AccessorSemantic::Gltf(valid_index.clone()), attribute);
                             }
                         }
                     }
-
+                    let normal = primitive_accessors
+                        .get(&AccessorSemantic::Gltf(gltf::Semantic::Normals))
+                        .unwrap()
+                        .clone();
+                    let tex = primitive_accessors
+                        .get(&AccessorSemantic::Gltf(gltf::Semantic::TexCoords(0)))
+                        .unwrap()
+                        .clone();
+                    if let Some(normal) = normal {
+                        println!("Found normal!");
+                    }
+                    if let Some(tex) = tex {
+                        println!("Found tex!");
+                    }
                     let mesh = assets::Mesh {
                         name: Some(format![
                             "{} primitive {}",
@@ -445,23 +796,47 @@ impl GltfContext {
                         vertex_buffer: primitive_accessors
                             .get(&AccessorSemantic::Gltf(gltf::Semantic::Positions))
                             .unwrap()
+                            .clone()
                             .unwrap(),
                         index_buffer: primitive_accessors
                             .get(&AccessorSemantic::Index)
                             .unwrap()
+                            .clone()
                             .unwrap(),
-                        normal_buffer: *primitive_accessors
+                        normal_buffer: primitive_accessors
                             .get(&AccessorSemantic::Gltf(gltf::Semantic::Normals))
-                            .unwrap(),
+                            .unwrap()
+                            .clone(),
                         tangent_buffer: None,
-                        tex_buffer: None,
-                        material: 0,
+                        tex_buffer: primitive_accessors
+                            .get(&AccessorSemantic::Gltf(gltf::Semantic::TexCoords(0)))
+                            .unwrap()
+                            .clone(),
+                        material: gltf_primitive
+                            .material
+                            .map(|x| x.value() as i32)
+                            .unwrap_or(-1),
                         transform: *transform,
                     };
-                    primitive_index += 1;
+                    asset_scene
+                        .meshes
+                        .push(asset_scene.meshes_storage.insert(mesh));
                 }
             }
         }
+
+        // Upload materials buffer
+        let mut materials: Vec<assets::CMaterial> = Vec::with_capacity(asset_scene.materials.len());
+        for material in asset_scene.materials.iter() {
+            let material = asset_scene.material_storage.get_clone(material).unwrap();
+            materials.push(material.to_c_struct(&asset_scene));
+        }
+        if !materials.is_empty() {
+            asset_scene.material_buffer = Some(
+                memory::make_transfer_buffer(ctx, materials.as_slice(), None, "Materials").unwrap(),
+            );
+        }
+
         Ok(asset_scene)
     }
 
@@ -472,41 +847,54 @@ impl GltfContext {
         offsets: &HashMap<AccessorSemantic, usize>,
         accessor: &gltf::json::Accessor,
         accessor_type: &AccessorSemantic,
+        format: Format,
     ) -> Option<Handle<AttributeView>> {
-        let view = document.buffer_views.get(accessor.buffer_view?.value())?;
-        let gltf_buffer = document.buffers.get(view.buffer.value())?;
+        let view = document
+            .buffer_views
+            .get(accessor.buffer_view.unwrap().value())
+            .unwrap();
+        let gltf_buffer = document.buffers.get(view.buffer.value()).unwrap();
         let component_size = GltfContext::get_component_size(accessor);
         let buffer_size = component_size * accessor.count as usize;
+        let total_offset = view.byte_offset.unwrap_or(0) + accessor.byte_offset;
         // Get buffer storage. We can hardcode this to the first as we're always making a monolithic buffer
         let asset_buffer = scene
             .buffer_storage
-            .get_immutable(scene.buffers.first()?)
+            .get_immutable(scene.buffers.first().unwrap())
             .unwrap();
         let buffer_view = asset_buffer
             .view(
-                *offsets.get(accessor_type)? as vk::DeviceSize,
+                *offsets.get(accessor_type).unwrap_or(&0) as vk::DeviceSize,
                 buffer_size as vk::DeviceSize,
             )
-            .ok()?;
+            .unwrap();
 
         let attribute_view = assets::AttributeView {
             buffer_view,
             stride: view.byte_stride.unwrap_or(component_size as u32) as u64,
-            format: Default::default(),
+            format,
             count: accessor.count as u64,
             component_size: component_size as u64,
         };
+        println!(
+            "{}: {:?}",
+            accessor
+                .name
+                .clone()
+                .unwrap_or(String::from("Unnamed accessor")),
+            attribute_view.format
+        );
         let attribute_view = scene.attributes_storage.insert(attribute_view);
-        scene.attributes.push(attribute_view);
+        scene.attributes.push(attribute_view.clone());
         Some(attribute_view)
     }
 
-    /// Get the offset in a vector
+    /// Get the Offset in a vector
     fn get_offset_in_vector(vec: &BTreeMap<usize, Vec<u8>>, index: usize) -> usize {
         vec.iter().take(index).map(|x| x.1.len()).sum()
     }
 
-    /// Get the offset in a vector
+    /// Get the Offset in a vector
     fn get_offset_in_optional_vector(
         vec: &BTreeMap<usize, Option<Vec<u8>>>,
         index: usize,
@@ -541,5 +929,87 @@ impl GltfContext {
 
     fn get_component_size(accessor: &gltf::json::Accessor) -> usize {
         accessor.component_type.unwrap().0.size() * accessor.type_.unwrap().multiplicity()
+    }
+
+    /// Converts all incoming image types to texels
+    fn convert_image_types_to_rgba(
+        convert_from_format: gltf::image::Format,
+        data: &[u8],
+    ) -> Vec<u8> {
+        use gltf::image::Format;
+        let (component_size, component_count) = match convert_from_format {
+            Format::R8 => (1, 1),
+            Format::R8G8 => (1, 2),
+            Format::R8G8B8 => (1, 3),
+            Format::R8G8B8A8 => (1, 4),
+            Format::R16 => (2, 1),
+            Format::R16G16 => (2, 2),
+            Format::R16G16B16 => (2, 3),
+            Format::R16G16B16A16 => (2, 4),
+            Format::R32G32B32FLOAT => (4, 3),
+            Format::R32G32B32A32FLOAT => (4, 4),
+        };
+
+        // Split up the data into chunks, slice into it by the component Size:
+        // If component does not exist, default to zero expect for the alpha channel
+
+        let max_component_value = match component_size {
+            1 => u8::MAX as f32,
+            2 => u16::MAX as f32,
+            4 => f32::MAX,
+            _ => 1.0, // Default value for unknown component Size
+        };
+
+        let mut result = Vec::with_capacity(data.len() / component_size * 4);
+        for pixel in data.chunks(component_size * component_count) {
+            let r = pixel.get(0..component_size);
+            let g = pixel.get(component_size..(2 * component_size));
+            let b = pixel.get((component_size * 2)..(3 * component_size));
+            let a = pixel.get((component_size * 3)..(4 * component_size));
+            result.push(
+                r.map(|x| GltfContext::normalize_component(x, max_component_value))
+                    .unwrap_or(0),
+            );
+            result.push(
+                g.map(|x| GltfContext::normalize_component(x, max_component_value))
+                    .unwrap_or(0),
+            );
+            result.push(
+                b.map(|x| GltfContext::normalize_component(x, max_component_value))
+                    .unwrap_or(0),
+            );
+            result.push(
+                a.map(|x| GltfContext::normalize_component(x, max_component_value))
+                    .unwrap_or(0),
+            );
+        }
+        result
+    }
+
+    /// Normalize a single component value
+    fn normalize_component(component: &[u8], max_value: f32) -> u8 {
+        let value = match component.len() {
+            1 => component[0] as f32,
+            2 => u16::from_be_bytes([component[0], component[1]]) as f32,
+            4 => f32::from_be_bytes([component[0], component[1], component[2], component[3]]),
+            _ => 0.0, // Default value for unknown component Size
+        };
+
+        (value / max_value * 255.0).round().clamp(0.0, 255.0) as u8
+    }
+}
+
+/// Converts the image type from gltf to Vulkan format
+fn get_image_type_rgba(in_format: gltf::image::Format) -> Option<vk::Format> {
+    match in_format {
+        gltf::image::Format::R8
+        | gltf::image::Format::R8G8
+        | gltf::image::Format::R8G8B8
+        | gltf::image::Format::R8G8B8A8 => Some(vk::Format::R8G8B8A8_UNORM),
+        gltf::image::Format::R16
+        | gltf::image::Format::R16G16
+        | gltf::image::Format::R16G16B16
+        | gltf::image::Format::R16G16B16A16 => Some(vk::Format::R16G16B16A16_UNORM),
+        _ => None,
     }
 }

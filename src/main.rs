@@ -1,3 +1,4 @@
+use crate::assets::loader::LoadableAsset;
 use crate::graphics::acceleration_structure::BLASBufferAddresses;
 use anyhow::Result;
 use phobos::domain::All;
@@ -9,7 +10,7 @@ use std::sync::{Arc, RwLock};
 use winit::event::Event;
 
 mod app;
-mod asset;
+mod assets;
 mod graphics;
 mod spirv;
 mod utils;
@@ -17,7 +18,7 @@ mod world;
 
 /// The basic renderer
 struct Raytracing {
-    scene: Arc<RwLock<asset::Scene>>,
+    scene: Arc<RwLock<assets::scene::Scene>>,
     acceleration_structure: Arc<graphics::acceleration_structure::SceneAccelerationStructure>,
     sampler: phobos::Sampler,
     camera: graphics::camera::Camera,
@@ -25,7 +26,7 @@ struct Raytracing {
     delta_time: f32,
     last_camera_pos: Option<glam::Vec2>,
     left_mouse_button_down: bool,
-    ctx: app::Context,
+    ctx: Arc<RwLock<app::Context>>,
     render_extent: vk::Extent2D,
     color: Attachment,
     deferred_delete: DeletionQueue<Attachment>,
@@ -38,7 +39,7 @@ struct Attachment {
 
 impl Attachment {
     pub fn new(
-        ctx: &mut app::Context,
+        ctx: Arc<RwLock<app::Context>>,
         format: vk::Format,
         extent: vk::Extent2D,
         extra_usage: vk::ImageUsageFlags,
@@ -54,9 +55,10 @@ impl Attachment {
                 vk::ImageAspectFlags::COLOR,
             )
         };
+        let mut ctx_write = ctx.write().unwrap();
         let image = phobos::Image::new(
-            ctx.device.clone(),
-            &mut ctx.allocator,
+            ctx_write.device.clone(),
+            &mut ctx_write.allocator,
             phobos::image::ImageCreateInfo {
                 width: extent.width,
                 height: extent.height,
@@ -86,25 +88,34 @@ impl app::App for Raytracing {
     where
         Self: Sized,
     {
-        let loader = asset::gltf_asset_loader::GltfAssetLoader::new();
-        let scene = loader.load_asset_from_file(
-            std::path::Path::new(
-                //gltf_sample_name("BoxTextured").as_str(),
-                gltf_sample_name("BoomBoxWithAxes").as_str(),
-                //gltf_sample_name("Sponza").as_str(),
-                //gltf_sample_name("ABeautifulGame").as_str(),
-                //gltf_sample_name("Lantern").as_str(),
-                //"C:/Users/Danny/Documents/deccer-cubes/SM_Deccer_Cubes_With_Rotation.gltf",
-                //"C:/Users/Danny/Documents/deccer-cubes/SM_Deccer_Cubes_Textured_Complex.gltf",
-                //"C:/Users/Danny/Documents/deccer-cubes/SM_Deccer_Cubes_Textured.gltf",
-                //"C:/Users/Danny/Documents/Assets/Junk Shop/Blender 2.gltf",
-                //"C:/Users/Danny/Documents/Assets/Classroom/classroom.gltf",
-                //"C:/Users/Danny/Documents/Assets/among_us_astronaut_-_clay/scene.gltf",
-            ),
-            &mut ctx,
-        );
+        let ctx = Arc::new(RwLock::new(ctx));
+        /*
+        let scene = assets::gltf_asset_loader2::GltfContext::load_scene(
+            ctx.clone(),
+            std::path::Path::new(gltf_sample_name("BoxTextured").as_str()),
+            //std::path::Path::new(gltf_sample_name("Sponza").as_str()),
+            //std::path::Path::new("C:/Users/Danny/Documents/deccer-cubes/SM_Deccer_Cubes_Textured_Complex.gltf", ),
+        )
+        .unwrap();
+         */
+        let scene = assets::scene::Scene::load(assets::scene::SceneLoadInfo::gltf {
+            context: ctx.clone(),
+            //path: std::path::PathBuf::from(gltf_sample_name("BoxTextured")),
+            //path: std::path::PathBuf::from(gltf_sample_name("BoomBoxWithAxes")),
+            //path: std::path::PathBuf::from(
+            //    "C:/Users/Danny/Documents/deccer-cubes/SM_Deccer_Cubes_Textured_Complex.gltf",
+            //),
+            path: std::path::PathBuf::from(gltf_sample_name("Sponza")),
+        })
+        .unwrap();
+        println!("[main]: Scene has {} mesh(es)", scene.meshes.len());
+        println!("[main]: Scene has {} attribute(s)", scene.attributes.len());
+        println!("[main]: Scene has {} image(s)", scene.images.len());
+        println!("[main]: Scene has {} texture(s)", scene.textures.len());
+        println!("[main]: Scene has {} material(s)", scene.materials.len());
+
         let scene_acceleration_structure =
-            graphics::acceleration_structure::convert_scene_to_blas(&mut ctx, &scene);
+            graphics::acceleration_structure::convert_scene_to_blas(ctx.clone(), &scene);
 
         let rgen = spirv::create_shader("shaders/raygen.spv", vk::ShaderStageFlags::RAYGEN_KHR);
         let rchit =
@@ -117,35 +128,49 @@ impl app::App for Raytracing {
             .add_ray_hit_group(Some(rchit), None)
             .add_ray_miss_group(rmiss)
             .build();
-        ctx.resource_pool
-            .pipelines
-            .create_named_raytracing_pipeline(pci)?;
+        {
+            let mut ctx_write = ctx.write().unwrap();
+            ctx_write
+                .resource_pool
+                .pipelines
+                .create_named_raytracing_pipeline(pci)?;
 
-        // Load shader
-        let vertex = spirv::load_spirv_file(std::path::Path::new("shaders/vert.spv"));
-        let fragment = spirv::load_spirv_file(std::path::Path::new("shaders/frag.spv"));
+            // Load shader
+            let vertex = spirv::load_spirv_file(std::path::Path::new("shaders/vert.spv"));
+            let fragment = spirv::load_spirv_file(std::path::Path::new("shaders/frag.spv"));
 
-        let vertex = phobos::ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::VERTEX, vertex);
-        let fragment =
-            phobos::ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::FRAGMENT, fragment);
+            let vertex = phobos::ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::VERTEX, vertex);
+            let fragment =
+                phobos::ShaderCreateInfo::from_spirv(vk::ShaderStageFlags::FRAGMENT, fragment);
 
-        // Now we can start using the pipeline builder to create our full pipeline.
-        let pci = phobos::PipelineBuilder::new("sample".to_string())
-            .vertex_input(0, vk::VertexInputRate::VERTEX)
-            .vertex_attribute(0, 0, vk::Format::R32G32_SFLOAT)?
-            .vertex_attribute(0, 1, vk::Format::R32G32_SFLOAT)?
-            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
-            .blend_attachment_none()
-            .cull_mask(vk::CullModeFlags::NONE)
-            .attach_shader(vertex)
-            .attach_shader(fragment)
-            .build();
+            // Now we can start using the pipeline builder to create our full pipeline.
+            let pci = phobos::PipelineBuilder::new("sample".to_string())
+                .vertex_input(0, vk::VertexInputRate::VERTEX)
+                .vertex_attribute(0, 0, vk::Format::R32G32_SFLOAT)?
+                .vertex_attribute(0, 1, vk::Format::R32G32_SFLOAT)?
+                .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR])
+                .blend_attachment_none()
+                .cull_mask(vk::CullModeFlags::NONE)
+                .attach_shader(vertex)
+                .attach_shader(fragment)
+                .build();
 
-        // Store the pipeline in the pipeline cache
-        ctx.resource_pool.pipelines.create_named_pipeline(pci)?;
-
-        let sampler = phobos::Sampler::default(ctx.device.clone())?;
-
+            // Store the pipeline in the pipeline cache
+            ctx_write
+                .resource_pool
+                .pipelines
+                .create_named_pipeline(pci)?;
+        }
+        let color_attachment = make_attachments(
+            ctx.clone(),
+            vk::Extent2D {
+                width: 800,
+                height: 600,
+            },
+        )
+        .unwrap();
+        let ctx_read = ctx.read().unwrap();
+        let sampler = phobos::Sampler::default(ctx_read.device.clone())?;
         Ok(Self {
             scene: Arc::new(RwLock::new(scene)),
             acceleration_structure: Arc::new(scene_acceleration_structure),
@@ -159,16 +184,9 @@ impl app::App for Raytracing {
                 width: 800,
                 height: 600,
             },
-            color: make_attachments(
-                ctx.clone(),
-                vk::Extent2D {
-                    width: 800,
-                    height: 600,
-                },
-            )
-            .unwrap(),
+            color: color_attachment,
             deferred_delete: DeletionQueue::new(4),
-            ctx,
+            ctx: ctx.clone(),
         })
     }
 
@@ -188,27 +206,54 @@ impl app::App for Raytracing {
             .write_storage_image(&rt_image, phobos::PipelineStage::RAY_TRACING_SHADER_KHR)
             .execute_fn(|cmd, ifc, bindings, _| {
                 let view = self.camera.view;
-                let projection = glam::Mat4::perspective_rh(
+                let mut projection = glam::Mat4::perspective_rh(
                     90.0_f32.to_radians(),
                     self.render_extent.width as f32 / self.render_extent.height as f32,
                     0.001,
                     1024.0,
                 );
+                projection.y_axis.y *= -1f32;
+                /*
+                let projection = projection
+                    * glam::Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2)
+                    * glam::Mat4::from_scale(glam::Vec3::new(1.0, -1.0, 1.0));
+
+                 */
                 let scene_read = self.scene.read().unwrap();
 
                 let mut object_description_sratch_buffer = ifc
                     .allocate_scratch_buffer(
                         (self.acceleration_structure.addresses.len()
-                            * std::mem::size_of::<asset::CMesh>())
+                            * std::mem::size_of::<assets::CMesh>())
                             as vk::DeviceSize,
                     )
-                    .expect("Unable to allocate scratch buffer"); // lmao
+                    .expect("Unable to allocate mesh scratch buffer"); // lmao
                 let mut material_descriptor_scratch_buffer = ifc
                     .allocate_scratch_buffer(
-                        (scene_read.materials.len() * std::mem::size_of::<asset::CMaterial>())
+                        (scene_read.materials.len()
+                            * std::mem::size_of::<assets::material::CMaterial>())
                             as vk::DeviceSize,
                     )
-                    .expect("Unable to allocate scratch buffer");
+                    .expect("Unable to allocate material scratch buffer");
+                /*
+                let mut memory_information_buffer = ifc
+                    .allocate_scratch_buffer(
+                        std::mem::size_of::<memory_information>() as vk::DeviceSize
+                    )
+                    .unwrap();
+                memory_information_buffer
+                    .mapped_slice::<memory_information>()
+                    .unwrap()
+                    .copy_from_slice(&[memory_information {
+                        mesh_buffer: self
+                            .acceleration_structure
+                            .addresses_buffer
+                            .as_ref()
+                            .unwrap()
+                            .address(),
+                        material_buffer: scene_read.material_buffer.as_ref().unwrap().address(),
+                    }]);
+                */
 
                 let material_slice = scene_read
                     .materials
@@ -220,16 +265,16 @@ impl app::App for Raytracing {
                             .unwrap()
                             .to_c_struct(scene_read.deref())
                     })
-                    .collect::<Vec<asset::CMaterial>>();
+                    .collect::<Vec<assets::material::CMaterial>>();
 
                 let mesh_slice = self.acceleration_structure.addresses.clone();
 
                 object_description_sratch_buffer
-                    .mapped_slice::<asset::CMesh>()
+                    .mapped_slice::<assets::mesh::CMesh>()
                     .unwrap()
                     .copy_from_slice(mesh_slice.as_slice());
                 material_descriptor_scratch_buffer
-                    .mapped_slice::<asset::CMaterial>()
+                    .mapped_slice::<assets::material::CMaterial>()
                     .unwrap()
                     .copy_from_slice(material_slice.as_slice());
 
@@ -241,10 +286,12 @@ impl app::App for Raytracing {
                             .image_storage
                             .get_immutable(x)
                             .unwrap()
+                            .image
                             .whole_view(vk::ImageAspectFlags::COLOR)
                             .unwrap()
                     })
                     .collect();
+
                 let sampler = scene_read
                     .sampler_storage
                     .get_immutable(scene_read.samplers.get(0).unwrap())
@@ -382,7 +429,7 @@ impl app::App for Raytracing {
                 },
                 winit::event::WindowEvent::MouseWheel { delta, .. } => match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {
-                        self.camera.speed += (self.camera.speed.abs()) * y * delta_time;
+                        self.camera.speed += (self.camera.speed.abs()) * y * delta_time * 4.0f32;
                         self.camera.speed = self.camera.speed.clamp(0.0, f32::MAX);
                         println!("Camera speed: {}", self.camera.speed);
                     }
@@ -427,10 +474,13 @@ impl app::App for Raytracing {
     }
 }
 
-fn make_attachments(mut ctx: app::Context, render_width: vk::Extent2D) -> Result<Attachment> {
+fn make_attachments(
+    ctx: Arc<RwLock<app::Context>>,
+    render_width: vk::Extent2D,
+) -> Result<Attachment> {
     // Make a color attachment
     Attachment::new(
-        &mut ctx,
+        ctx,
         vk::Format::R32G32B32A32_SFLOAT,
         render_width,
         vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE,

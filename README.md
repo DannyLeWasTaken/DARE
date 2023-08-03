@@ -10,7 +10,7 @@ This utilizes the [phobos-rs](https://github.com/NotAPenguin0/phobos-rs/tree/mas
 - [X] Hello, window
 - [X] Handle abstraction
 - [X] Asset system
-- [X] Asset importing (gltf)
+- [X] Asset importing (Gltf)
 - [X] Asset uploading to GPU (futures)
 - [X] Acceleration structure abstraction
 - [X] Basic geometry renderer (no shading)
