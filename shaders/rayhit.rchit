@@ -28,9 +28,9 @@ layout (set = 1, binding = 2, scalar) buffer MaterialDescription_ {
 } MaterialDescriptionArray;
 layout(set = 1, binding = 3) uniform sampler2D texture_samplers[];
 
-vec3 hsv_to_rgb(in vec3 hsv) {
-    const vec3 rgb = clamp(abs(mod(hsv.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, vec3(0.0), vec3(1.0));
-    return hsv.z * mix(vec3(1.0), rgb, hsv.y);
+dvec3 hsv_to_rgb(in dvec3 hsv) {
+    const dvec3 rgb = clamp(abs(mod(hsv.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, vec3(0.0), vec3(1.0));
+    return hsv.z * mix(dvec3(1.0), rgb, hsv.y);
 }
 
 const float M_GOLDEN_CONJ = 0.6180339887498948482045868343656381177203091798057628621354486227;
@@ -59,7 +59,7 @@ void main() {
         // Normal
         vec3 normal;
         vec3 world_normal;
-        const vec3 geom_normal = normalize(cross(v0 - v1, v2 - v0));
+        const vec3 geometry_normal = normalize(cross(v0 - v1, v2 - v0));
         if (object_resource.normal_buffer > 0) {
             vec3 n_v0 = normals.v[ind.x];
             vec3 n_v1 = normals.v[ind.y];
@@ -67,7 +67,7 @@ void main() {
             normal = normalize(n_v0 * barycentrics.x + n_v1 * barycentrics.y + n_v2 * barycentrics.z);
             world_normal = normalize(vec3(normal * gl_WorldToObjectEXT));
         } else {
-            normal = geom_normal;
+            normal = geometry_normal;
             world_normal = normalize(vec3(normal * gl_WorldToObjectEXT));
         }
 
@@ -81,13 +81,12 @@ void main() {
             vec2 t_v0 = tex_coords.v[ind.x];
             vec2 t_v1 = tex_coords.v[ind.y];
             vec2 t_v2 = tex_coords.v[ind.z];
-            vec2 tex_coord_0 = vec2(t_v0.x * barycentrics.x + t_v1.x * barycentrics.y + t_v2.x * barycentrics.z,
-                                    1.0 - (t_v0.y * barycentrics.x + t_v1.y * barycentrics.y + t_v2.y * barycentrics.z));
-            tex_coord_0.y = 1 - tex_coord_0.y; // Flip Y
+            vec2 tex_coords = t_v0 * barycentrics.x + t_v1 * barycentrics.y + t_v2 * barycentrics.z;
 
-
-            payload.hit_value = texture(texture_samplers[nonuniformEXT(material_resource.albedo_texture)], tex_coord_0).rgb
+            payload.hit_value = texture(texture_samplers[nonuniformEXT(material_resource.albedo_texture)], tex_coords).rgb
             * material_resource.albedo;
+            //payload.hit_value = vec3(tex_coords, 0);
+            //payload.hit_value = vec3(hsv_to_rgb(dvec3(double(object_resource.tex_buffer) * double(M_GOLDEN_CONJ), 0.875, 0.85)));
             //payload.hit_value = hsv_to_rgb(vec3(float(gl_InstanceCustomIndexEXT) * M_GOLDEN_CONJ, 0.875, 0.85));
             //payload.hit_value = hsv_to_rgb(vec3(float(material_resource.albedo_texture) * M_GOLDEN_CONJ, 0.875, 0.85));
             //payload.hit_value = vec3(tex_coord_0, 0);
