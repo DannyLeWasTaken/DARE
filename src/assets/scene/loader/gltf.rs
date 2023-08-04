@@ -297,9 +297,22 @@ mod tests {
 
     #[test]
     fn dimension_conversion() {
-        let values = [0u8, 1u8, 3u8];
+        let values = [0u8, 1u8, 3u8, 0u8, 4u8, 3u8];
+
+        // Expanding
         let converted_values = convert_dimensions::<u8>(3, 4, values.as_slice());
-        assert_eq!(converted_values, [0u8, 1u8, 3u8, 0u8]);
+        assert_eq!(converted_values, [0u8, 1u8, 3u8, 0u8, 0u8, 4u8, 3u8, 0u8]);
+
+        // Shortening
+        let converted_values = convert_dimensions::<u8>(3, 2, &values);
+        assert_eq!(converted_values, [0u8, 1u8, 0u8, 4u8]);
+
+        let converted_values = convert_dimensions::<u8>(3, 1, &values);
+        assert_eq!(converted_values, [0u8, 0u8]);
+
+        // Same
+        let converted_values = convert_dimensions::<u8>(3, 3, &values);
+        assert_eq!(converted_values, [0u8, 1u8, 3u8, 0u8, 4u8, 3u8]);
     }
 
     #[test]
@@ -308,6 +321,14 @@ mod tests {
         let normalized_values =
             normalize_bytes_slice_type::<f32, u8>(bytemuck::cast_slice(values.as_slice()));
         assert_eq!(normalized_values, [u8::MAX, u8::MAX, 0u8]);
+    }
+
+    #[test]
+    fn cast_byte_slice() {
+        let values = [0u16, 4, 8, 2];
+        let casted_values = cast_bytes_slice_type::<u16, u32>(bytemuck::cast_slice(&values));
+        let casted_values = bytemuck::cast_slice::<u8, u32>(&casted_values);
+        assert_eq!(casted_values, [0u32, 4, 8, 2]);
     }
 }
 
@@ -501,7 +522,16 @@ fn get_accessors_from_primitives(
                         panic!("Unsupported component type conversion!");
                     }
                 };
-
+            println!(
+                "Transforming CType: {:?} -> {:?}",
+                accessor.component_type.unwrap().0,
+                target_component_type
+            );
+            println!(
+                "Transforming dimension: {:?} -> {:?}",
+                accessor.type_.unwrap().multiplicity(),
+                target_dimension.multiplicity()
+            );
             // Use a temporary entry struct as the asset version requires a buffer view which we
             // do not have
             let mut entry = structs::Accessor {
@@ -578,6 +608,7 @@ fn get_accessors_from_primitives(
 
         let view = &document.buffer_views[accessor.buffer_view.unwrap().value()];
         let entry: assets::buffer_view::AttributeView<u8> = assets::buffer_view::AttributeView {
+            name: struct_entry.name.clone(),
             buffer_view: monolithic_buffer
                 .view(
                     struct_entry.offset as vk::DeviceSize,
@@ -747,7 +778,7 @@ fn load_images(
                 let src_access_mask = vk::AccessFlags2::empty();
                 let dst_access_mask = vk::AccessFlags2::TRANSFER_WRITE;
                 let source_stage = vk::PipelineStageFlags2::TOP_OF_PIPE;
-                let destination_stage = vk::PipelineStageFlags2::TRANSFER;
+                let destination_stage = vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
 
                 let image_barrier = vk::ImageMemoryBarrier2 {
                     s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
@@ -757,7 +788,7 @@ fn load_images(
                     dst_stage_mask: destination_stage,
                     dst_access_mask,
                     old_layout: vk::ImageLayout::UNDEFINED,
-                    new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    new_layout: vk::ImageLayout::READ_ONLY_OPTIMAL,
                     src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                     dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                     image: unsafe { vk_image.handle() },
@@ -790,7 +821,15 @@ fn load_images(
                     &vk_image.whole_view(vk::ImageAspectFlags::COLOR).unwrap(),
                 )
                 .unwrap();
-            println!("Index image: {} - {}", index, vk_images.len() - 1);
+            println!(
+                "Name: {}, Index image: {} - {}",
+                image
+                    .name
+                    .clone()
+                    .unwrap_or(format!("Unnamed image {}", index)),
+                index,
+                vk_images.len() - 1
+            );
         }
         let image_cmds = image_cmds.finish().unwrap();
         temp_exec_manager
@@ -832,16 +871,17 @@ fn load_materials_from_primitives(
         let get_texture = |index: usize| -> Option<Handle<assets::texture::Texture>> {
             scene.textures.get(index).cloned()
         };
-        let primitive_material = match primitive.handle.as_ref().unwrap().material {
-            None => assets::material::Material {
-                albedo_texture: None,
-                albedo_color: glam::Vec3::new(75f32 / 255f32, 0f32, 130f32 / 255f32),
-            },
-            Some(index) => {
-                let gltf_material = &document.materials[index.value()];
-                let pbr_material = &gltf_material.pbr_metallic_roughness;
-                println!(
-                    "Primitive name: {:?} Texture name: {:?}",
+        let primitive_material =
+            match primitive.handle.as_ref().unwrap().material {
+                None => assets::material::Material {
+                    albedo_texture: None,
+                    albedo_color: glam::Vec3::new(75f32 / 255f32, 0f32, 130f32 / 255f32),
+                },
+                Some(index) => {
+                    let gltf_material = &document.materials[index.value()];
+                    let pbr_material = &gltf_material.pbr_metallic_roughness;
+                    println!(
+                    "Primitive name: {:?}. Image name: {:?}. Texture name: {:?}. Texture index: {}",
                     primitive.name,
                     pbr_material.base_color_texture.as_ref().and_then(|x| {
                         get_texture(x.index.value()).and_then(|x| {
@@ -854,23 +894,36 @@ fn load_materials_from_primitives(
                                     .clone()
                             })
                         })
-                    })
-                );
-                if pbr_material.base_color_texture.is_some() {
-                    assert_eq!(
-                        pbr_material.base_color_texture.as_ref().unwrap().tex_coord,
-                        0
-                    );
-                }
-                assets::material::Material {
-                    albedo_texture: pbr_material
+                    }),
+                    pbr_material.base_color_texture.as_ref().and_then(|x| {
+                        get_texture(x.index.value()).and_then(|x| {
+                            scene.texture_storage.get_immutable(&x).unwrap()
+                                .name.clone()
+                        })
+                    }),
+                    pbr_material
                         .base_color_texture
                         .as_ref()
-                        .and_then(|x| get_texture(x.index.value())),
-                    albedo_color: glam::Vec3::from_slice(&pbr_material.base_color_factor.0),
+                        .map(|x| {
+                            x.index
+                            .value() as i32
+                        }).unwrap_or(-1),
+                );
+                    if pbr_material.base_color_texture.is_some() {
+                        assert_eq!(
+                            pbr_material.base_color_texture.as_ref().unwrap().tex_coord,
+                            0
+                        );
+                    }
+                    assets::material::Material {
+                        albedo_texture: pbr_material
+                            .base_color_texture
+                            .as_ref()
+                            .and_then(|x| get_texture(x.index.value())),
+                        albedo_color: glam::Vec3::from_slice(&pbr_material.base_color_factor.0),
+                    }
                 }
-            }
-        };
+            };
         materials.push(primitive_material);
         primitive.material = Some(materials.len() - 1);
     }
@@ -919,9 +972,24 @@ fn get_vk_format(
 
 /// Loads the textures into the scene into the dcument
 fn load_texture(scene: &mut assets::scene::Scene, document: &gltf::json::Root) {
-    for texture in document.textures.iter() {
+    for (index, texture) in document.textures.iter().enumerate() {
+        assert_eq!(
+            scene
+                .image_storage
+                .get_immutable(&scene.images[texture.source.value()])
+                .unwrap()
+                .name
+                .clone()
+                .unwrap(),
+            format!("Unnamed image {}", texture.source.value())
+        );
         let asset_texture = assets::texture::Texture {
-            name: texture.name.clone(),
+            name: Some(
+                texture
+                    .name
+                    .clone()
+                    .unwrap_or(format!("Unnamed texture {}", index)),
+            ),
             image: scene.images[texture.source.value()].clone(),
             sampler: scene.samplers[0].clone(),
             format: vk::Format::R8G8B8A8_UNORM,
@@ -1074,7 +1142,7 @@ pub fn gltf_load(
             println!(
                 "Mesh name: {:?} material index at: {}",
                 primitive.name.clone(),
-                primitive.material.map(|x| x as i64).unwrap_or(-1i64)
+                index
             );
             let asset_mesh = assets::mesh::Mesh {
                 name: primitive.name.clone(),
@@ -1090,11 +1158,36 @@ pub fn gltf_load(
                 tex_buffer: get_accessor(structs::AccessorSemantic::Gltf(
                     gltf::Semantic::TexCoords(0),
                 )),
-                material: primitive
-                    .material
-                    .and_then(|x| scene.materials.get(x).cloned()),
+                material: scene.materials.get(index).cloned(),
                 transform,
             };
+            if asset_mesh.tex_buffer.is_some() {
+                println!(
+                    "Tex buffer used by: {:?}. Index: {:?}. Name: {:?}",
+                    primitive.name.clone(),
+                    primitive
+                        .handle
+                        .as_ref()
+                        .unwrap()
+                        .attributes
+                        .get(&gltf::json::validation::Checked::Valid(
+                            gltf::Semantic::TexCoords(0)
+                        ))
+                        .unwrap()
+                        .value(),
+                    scene
+                        .attributes_storage
+                        .get_immutable(
+                            &get_accessor(structs::AccessorSemantic::Gltf(
+                                gltf::Semantic::TexCoords(0),
+                            ))
+                            .unwrap()
+                        )
+                        .unwrap()
+                        .name
+                );
+            }
+
             scene.meshes.push(scene.meshes_storage.insert(asset_mesh));
         }
     }
