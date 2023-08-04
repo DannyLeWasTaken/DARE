@@ -9,6 +9,7 @@ use gltf::image::Format;
 use phobos::{IncompleteCmdBuffer, TransferCmdBuffer};
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ptr;
 use std::sync::{Arc, RwLock};
 
 mod structs {
@@ -69,19 +70,6 @@ fn deserialize(
 )> {
     let (document, buffers, images) = gltf::import(path)?;
     let mut document_json = document.clone().into_json();
-    for (index, node) in document.nodes().enumerate() {
-        document_json.nodes[node.index()].matrix = Some(
-            <[f32; 16]>::try_from(
-                node.transform()
-                    .matrix()
-                    .iter()
-                    .flatten()
-                    .copied()
-                    .collect::<Vec<f32>>(),
-            )
-            .unwrap(),
-        );
-    }
     Ok((document_json, buffers, images))
 }
 
@@ -89,7 +77,7 @@ fn deserialize(
 fn flatten_primitives(
     root_nodes: Vec<&gltf::json::scene::Node>,
     document: &gltf::json::Root,
-) -> (Vec<structs::GltfPrimitive>, Vec<usize>) {
+) -> (Vec<structs::GltfPrimitive>, Vec<(usize, glam::Mat4)>) {
     let get_transformation =
         |translation: Option<[f32; 3]>, rotation: Option<[f32; 4]>, scale: Option<[f32; 3]>| {
             glam::Mat4::from_scale(scale.map(glam::Vec3::from).unwrap_or(glam::Vec3::ONE))
@@ -123,7 +111,7 @@ fn flatten_primitives(
         })
         .collect();
     let mut unique_primitives: Vec<structs::GltfPrimitive> = Vec::new(); // Vector containing unique primitives
-    let mut primitive_indices: Vec<usize> = Vec::new(); // Vector that contains indices pointing into the vector with unique indices
+    let mut primitive_indices: Vec<(usize, glam::Mat4)> = Vec::new(); // Vector that contains indices pointing into the vector with unique indices
     let mut seen_primitives: HashMap<(usize, usize), usize> = HashMap::new();
     while !nodes.is_empty() {
         let (node, transform) = nodes.pop().unwrap();
@@ -151,12 +139,14 @@ fn flatten_primitives(
                         transform
                     );
                     e.insert(unique_primitives.len() - 1);
-                    primitive_indices.push(unique_primitives.len() - 1);
+                    primitive_indices.push(((unique_primitives.len() - 1), transform));
                 } else {
-                    primitive_indices
-                        .push(*seen_primitives.get(&(mesh_index.value(), index)).unwrap());
+                    primitive_indices.push((
+                        *seen_primitives.get(&(mesh_index.value(), index)).unwrap(),
+                        transform,
+                    ));
                 }
-                primitive_indices.push(mesh_index.value());
+                primitive_indices.push((mesh_index.value(), transform));
             }
         }
         if let Some(node_childrens) = node.children {
@@ -165,7 +155,7 @@ fn flatten_primitives(
                 if let Some(matrix) = node.matrix {
                     child_transform *= glam::Mat4::from_cols_array(&matrix);
                 } else {
-                    child_transform *= get_transformation(
+                    child_transform = get_transformation(
                         node.translation,
                         node.rotation.map(|x| x.0),
                         node.scale,
@@ -176,7 +166,6 @@ fn flatten_primitives(
         }
     }
     unique_primitives.sort_by(|x, y| x.index.cmp(&y.index));
-    primitive_indices.sort();
 
     (unique_primitives, primitive_indices)
 }
@@ -557,11 +546,6 @@ fn get_accessors_from_primitives(
         }
 
         let primitive_accessors: HashMap<structs::AccessorSemantic, Vec<u8>> = HashMap::new();
-        println!(
-            "Trying: {:?} with {:?}",
-            primitive.name.clone(),
-            primitive.handle.as_ref().unwrap().attributes.keys()
-        );
         for (semantic, accessor_index) in primitive.handle.as_ref().unwrap().attributes.iter() {
             let semantic = semantic.clone().unwrap();
             process_accessor(
@@ -751,19 +735,59 @@ fn load_images(
                     samples: vk::SampleCountFlags::TYPE_1,
                     mip_levels: 1,
                     layers: 1,
+                    memory_type: phobos::MemoryType::GpuOnly,
                 },
             )
             .unwrap();
             vk_images.push(vk_image);
+            let vk_image = vk_images.last().unwrap();
+
+            // Transition layout
+            {
+                let src_access_mask = vk::AccessFlags2::empty();
+                let dst_access_mask = vk::AccessFlags2::TRANSFER_WRITE;
+                let source_stage = vk::PipelineStageFlags2::TOP_OF_PIPE;
+                let destination_stage = vk::PipelineStageFlags2::TRANSFER;
+
+                let image_barrier = vk::ImageMemoryBarrier2 {
+                    s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
+                    p_next: ptr::null(),
+                    src_stage_mask: source_stage,
+                    src_access_mask,
+                    dst_stage_mask: destination_stage,
+                    dst_access_mask,
+                    old_layout: vk::ImageLayout::UNDEFINED,
+                    new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    image: unsafe { vk_image.handle() },
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                };
+
+                image_cmds = image_cmds.pipeline_barrier(&vk::DependencyInfo {
+                    s_type: vk::StructureType::DEPENDENCY_INFO,
+                    p_next: ptr::null(),
+                    dependency_flags: vk::DependencyFlags::empty(),
+                    memory_barrier_count: 0,
+                    p_memory_barriers: ptr::null(),
+                    buffer_memory_barrier_count: 0,
+                    p_buffer_memory_barriers: ptr::null(),
+                    image_memory_barrier_count: 1,
+                    p_image_memory_barriers: &image_barrier.clone(),
+                });
+            }
+
             // Copy data into image
             image_cmds = image_cmds
                 .copy_buffer_to_image(
                     &transfer_buffers[index].view_full(),
-                    &vk_images
-                        .last()
-                        .unwrap()
-                        .whole_view(vk::ImageAspectFlags::COLOR)
-                        .unwrap(),
+                    &vk_image.whole_view(vk::ImageAspectFlags::COLOR).unwrap(),
                 )
                 .unwrap();
             println!("Index image: {} - {}", index, vk_images.len() - 1);
@@ -786,7 +810,7 @@ fn load_images(
                         document.images[index]
                             .name
                             .clone()
-                            .unwrap_or(String::from(format!("Unnamed image {}", index))),
+                            .unwrap_or(format!("Unnamed image {}", index)),
                     ),
                     image,
                 }),
@@ -1039,7 +1063,8 @@ pub fn gltf_load(
 
     // Finally, add the glorious mesh
     {
-        for primitive in unique_primitives {
+        for (index, transform) in gltf_meshes {
+            let primitive = &unique_primitives[index];
             let get_accessor = |semantic: structs::AccessorSemantic| {
                 primitive
                     .accessors
@@ -1068,7 +1093,7 @@ pub fn gltf_load(
                 material: primitive
                     .material
                     .and_then(|x| scene.materials.get(x).cloned()),
-                transform: primitive.transform,
+                transform,
             };
             scene.meshes.push(scene.meshes_storage.insert(asset_mesh));
         }
