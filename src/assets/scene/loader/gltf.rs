@@ -580,6 +580,11 @@ fn get_accessors_from_primitives(
                 offset: 0,
             };
 
+            // Determine padding
+            let alignment = target_component_type.size() * target_dimension.multiplicity();
+            let padding = alignment - (monolithic_buffer.len() % alignment);
+            monolithic_buffer.extend(vec![0u8; padding]);
+
             // Get contents of the accessor, add to the monolithic buffer, update offsets
             entry.size = accessor_contents.len();
             entry.offset = monolithic_buffer.len();
@@ -807,7 +812,7 @@ fn load_images(
             vk_images.push(vk_image);
             let vk_image = vk_images.last().unwrap();
 
-            // Transition layout
+            // Transition layout (this is fucking wrong)
             {
                 let src_access_mask = vk::AccessFlags2::empty();
                 let dst_access_mask = vk::AccessFlags2::TRANSFER_WRITE;
