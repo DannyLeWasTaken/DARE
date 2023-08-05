@@ -170,21 +170,6 @@ fn flatten_primitives(
     (unique_primitives, primitive_indices)
 }
 
-/// Gets all gltf buffers
-fn get_buffers() -> Vec<structs::GltfBuffer> {
-    todo!()
-}
-
-/// Generate normals
-fn generate_normals(
-    document: &gltf::json::Root,
-    monolithic_buffer: &[u8],
-    vertex_accessor: &structs::Accessor,
-    index_accessor: &structs::Accessor,
-) -> Vec<u8> {
-    todo!()
-}
-
 /// Convert a slice of bytes as another
 fn cast_bytes_slice_type<
     T: 'static + num_traits::ToPrimitive + bytemuck::Pod + Sync,
@@ -213,7 +198,7 @@ fn cast_bytes_slice_type<
 
     // Cast contents (bytes) -> T -> Cast to U -> Reinterpret back to bytes
     let intermediate: Vec<U> = bytemuck::cast_slice::<u8, T>(contents)
-        .iter()
+        .par_iter()
         .map(|x| num_traits::NumCast::from(*x).unwrap())
         .collect();
 
@@ -293,7 +278,7 @@ fn convert_dimensions<T: bytemuck::Zeroable + bytemuck::Pod + Sync + Send>(
 
     // Quickly convert dimensions
     let intermediate = components
-        .chunks(from_components)
+        .par_chunks(from_components)
         .map(|chunk| {
             let mut inner: Vec<T> = Vec::with_capacity(to_components);
             if from_components > to_components {
