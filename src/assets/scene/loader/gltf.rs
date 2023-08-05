@@ -677,15 +677,6 @@ fn get_accessors_from_primitives(
     (accessor_asset_views, monolithic_buffer)
 }
 
-fn get_image_type_rgba(image_format: gltf::image::Format) -> gltf::image::Format {
-    match image_format {
-        Format::R8 | Format::R16 => Format::R8,
-        Format::R8G8 | Format::R16G16 => Format::R8G8,
-        Format::R8G8B8 | Format::R16G16B16 | Format::R32G32B32FLOAT => Format::R8G8B8,
-        Format::R8G8B8A8 | Format::R16G16B16A16 | Format::R32G32B32A32FLOAT => Format::R8G8B8A8,
-    }
-}
-
 fn load_images(
     context: Arc<RwLock<app::Context>>,
     scene: &mut assets::scene::Scene,
