@@ -9,8 +9,12 @@ use std::sync::{Arc, Weak};
 ///
 /// [`BufferView`]: phobos::BufferView
 /// [`BufferViewVulkan`]: BufferViewVulkan
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AttributeView<T: Sized> {
+    // Name of the buffer
+    pub name: Option<String>,
+
+    // Actual buffer view
     pub buffer_view: phobos::BufferView,
 
     /// Stride information

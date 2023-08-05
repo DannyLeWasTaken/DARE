@@ -36,7 +36,7 @@ impl Material {
 }
 
 /// Represents the material c-struct for use in shaders
-#[repr(C)]
+#[repr(C, align(4))]
 #[derive(Copy, Clone, PartialOrd, PartialEq)]
 pub struct CMaterial {
     pub albedo_texture: i32,

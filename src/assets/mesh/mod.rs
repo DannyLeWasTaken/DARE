@@ -20,7 +20,7 @@ pub struct Mesh {
 }
 
 /// C-like representation of the mesh mainly for use in shader
-#[repr(C)]
+#[repr(C, align(4))]
 #[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct CMesh {
     pub vertex_buffer: u64,
@@ -71,11 +71,6 @@ impl Mesh {
                 })
                 .unwrap_or(-1),
         };
-        println!(
-            "Material index: {} - {}",
-            mesh.material,
-            scene.materials.len()
-        );
         mesh
     }
 }

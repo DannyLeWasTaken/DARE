@@ -15,13 +15,11 @@ pub fn calculate_normals(vertices: &Vec<glam::Vec3>, indices: &Vec<u32>) -> Vec<
         let v0 = vertices.get(i0).unwrap();
         let v1 = vertices.get(i1).unwrap();
         let v2 = vertices.get(i2).unwrap();
-        let n = glam::Vec3::normalize(glam::Vec3::cross(
-            *v1 - *v0, *v2 - *v0
-        ));
+        let n = glam::Vec3::normalize(glam::Vec3::cross(*v1 - *v0, *v2 - *v0));
         normals[i0] += n;
         normals[i1] += n;
         normals[i2] += n;
     });
 
-    normals.into_iter().map(glam::Vec3::normalize).collect() 
+    normals.into_iter().map(glam::Vec3::normalize).collect()
 }

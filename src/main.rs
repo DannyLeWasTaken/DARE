@@ -68,6 +68,7 @@ impl Attachment {
                 samples: vk::SampleCountFlags::TYPE_1,
                 mip_levels: 1,
                 layers: 1,
+                memory_type: phobos::MemoryType::GpuOnly,
             },
         )?;
         let view = image.whole_view(aspect)?;
@@ -100,12 +101,28 @@ impl app::App for Raytracing {
          */
         let scene = assets::scene::Scene::load(assets::scene::SceneLoadInfo::gltf {
             context: ctx.clone(),
-            path: std::path::PathBuf::from(gltf_sample_name("OrientationTest")),
+            //path: std::path::PathBuf::from(gltf_sample_name("Sponza")),
+            //path: std::path::PathBuf::from(gltf_sample_name("MetalRoughSpheres")),
+            //path: std::path::PathBuf::from(gltf_sample_name("Lantern")),
             //path: std::path::PathBuf::from(gltf_sample_name("BoomBoxWithAxes")),
             //path: std::path::PathBuf::from(
-            //    "C:/Users/Danny/Documents/deccer-cubes/SM_Deccer_Cubes_Textured_Complex.gltf",
+            //    "C:/Users/Danny/Documents/deccer-cubes/SM_Deccer_Cubes_Merged_Texture_Atlas.gltf",
             //),
+            //path: std::path::PathBuf::from(gltf_sample_name("TextureCoordinateTest")),
             //path: std::path::PathBuf::from(gltf_sample_name("Sponza")),
+            //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/Bistro/bistro.glb"),
+            //path: std::path::PathBuf::from(
+            //    "C:/Users/Danny/Documents/Assets/minecraft_castle/scene.gltf",
+            //),
+            //path: std::path::PathBuf::from(
+            //    "C:/Users/Danny/Documents/Assets/among_us_astronaut_-_clay/scene.gltf",
+            //),
+            path: std::path::PathBuf::from(
+                "C:/Users/Danny/Documents/Assets/cyberpunk_2077_-_quadra_v-tech/scene.gltf",
+            ),
+            //path: std::path::PathBuf::from(
+            //    "C:/Users/Danny/Documents/Assets/forest_demo/scene.gltf",
+            //),
         })
         .unwrap();
         println!("[main]: Scene has {} mesh(es)", scene.meshes.len());

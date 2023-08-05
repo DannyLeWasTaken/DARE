@@ -146,22 +146,22 @@ fn flatten_primitives(
                         transform,
                     ));
                 }
-                primitive_indices.push((mesh_index.value(), transform));
             }
         }
         if let Some(node_childrens) = node.children {
-            for child_node in node_childrens {
+            for child_node_index in node_childrens {
                 let mut child_transform = transform;
-                if let Some(matrix) = node.matrix {
+                let child_node = document.nodes[child_node_index.value()].clone();
+                if let Some(matrix) = child_node.matrix {
                     child_transform *= glam::Mat4::from_cols_array(&matrix);
                 } else {
-                    child_transform = get_transformation(
-                        node.translation,
-                        node.rotation.map(|x| x.0),
-                        node.scale,
+                    child_transform *= get_transformation(
+                        child_node.translation,
+                        child_node.rotation.map(|x| x.0),
+                        child_node.scale,
                     );
                 }
-                nodes.push((document.nodes[child_node.value()].clone(), child_transform));
+                nodes.push((child_node, child_transform));
             }
         }
     }
@@ -185,7 +185,7 @@ fn generate_normals(
     todo!()
 }
 
-/// Convert a slice of bytes from one type to another
+/// Convert a slice of bytes as another
 fn cast_bytes_slice_type<
     T: 'static + num_traits::ToPrimitive + bytemuck::Pod + Sync,
     U: 'static + num_traits::NumCast + bytemuck::Pod + Send,
@@ -194,19 +194,32 @@ fn cast_bytes_slice_type<
 ) -> Vec<u8> {
     // If same type, return early
     if std::any::TypeId::of::<T>() == std::any::TypeId::of::<U>() {
+        println!(
+            "I AM NOT CONVERTING: {} -> {}",
+            std::any::type_name::<T>(),
+            std::any::type_name::<U>()
+        );
         return contents.to_vec();
     }
     let from_size = std::mem::size_of::<T>();
     let target_size = std::mem::size_of::<U>();
+    println!(
+        "I AM NOW CONVERTING: {} -> {}",
+        std::any::type_name::<T>(),
+        std::any::type_name::<U>()
+    );
 
     assert_eq!(contents.len() % from_size, 0); // Must be perfectly sliced
 
     // Cast contents (bytes) -> T -> Cast to U -> Reinterpret back to bytes
-    let contents: Vec<U> = bytemuck::cast_slice::<u8, T>(contents)
-        .par_iter()
+    let intermediate: Vec<U> = bytemuck::cast_slice::<u8, T>(contents)
+        .iter()
         .map(|x| num_traits::NumCast::from(*x).unwrap())
         .collect();
-    bytemuck::cast_slice::<U, u8>(contents.as_slice()).to_vec()
+
+    assert_eq!(intermediate.len(), contents.len() / from_size);
+
+    bytemuck::cast_slice::<U, u8>(intermediate.as_slice()).to_vec()
 }
 
 /// Normalizes the slice of one bytes to another
@@ -224,8 +237,19 @@ fn normalize_bytes_slice_type<
 ) -> Vec<u8> {
     // If same type, return early
     if std::any::TypeId::of::<T>() == std::any::TypeId::of::<U>() {
+        println!(
+            "I AM NOT CONVERTING: {} -> {}",
+            std::any::type_name::<T>(),
+            std::any::type_name::<U>()
+        );
         return contents.to_vec();
     }
+    println!(
+        "I AM NOW CONVERTING: {} -> {}",
+        std::any::type_name::<T>(),
+        std::any::type_name::<U>()
+    );
+
     let from_size = std::mem::size_of::<T>();
     let target_size = std::mem::size_of::<U>();
 
@@ -269,7 +293,7 @@ fn convert_dimensions<T: bytemuck::Zeroable + bytemuck::Pod + Sync + Send>(
 
     // Quickly convert dimensions
     let intermediate = components
-        .par_chunks(from_components)
+        .chunks(from_components)
         .map(|chunk| {
             let mut inner: Vec<T> = Vec::with_capacity(to_components);
             if from_components > to_components {
@@ -368,6 +392,7 @@ fn get_accessors_from_primitives(
                 },
                 structs::AccessorSemantic::Index => ComponentType::U32,
             };
+
             let target_dimension: Type = match &semantic {
                 structs::AccessorSemantic::Gltf(gltf) => match gltf {
                     Semantic::Positions | Semantic::Normals => Type::Vec3,
@@ -377,8 +402,12 @@ fn get_accessors_from_primitives(
                 },
                 structs::AccessorSemantic::Index => Type::Scalar,
             };
+
             // Get accessors contents
             let accessor_contents = get_accessors_contents(accessor, view, document, buffers);
+            if accessor.type_.unwrap().multiplicity() == 2 {
+                println!("{:?}", bytemuck::cast_slice::<u8, f32>(&accessor_contents));
+            }
             // Convert accessor dimensions first
             let accessor_contents = match accessor.component_type.unwrap().0 {
                 ComponentType::I8 => convert_dimensions::<i8>(
@@ -536,9 +565,10 @@ fn get_accessors_from_primitives(
             // do not have
             let mut entry = structs::Accessor {
                 name: Some(format![
-                    "{} accessor {:?}",
+                    "{} accessor {:?} {}",
                     primitive.name.as_ref().unwrap(),
-                    semantic.clone()
+                    semantic.clone(),
+                    accessor_index,
                 ]),
                 handle: Some(accessor.clone()),
                 semantic: semantic.clone(),
@@ -625,13 +655,16 @@ fn get_accessors_from_primitives(
             offset: struct_entry.offset as u64,
         };
         println!(
-            "Name: {:?} CType: {:?} Dimension: {:?} Format: {:?} Index: {} Stride: {}",
+            "Name: {:?} CType: {:?} Dimension: {:?} Format: {:?} Index: {} Stride: {} Range: {}-{} Address: {}",
             struct_entry.name,
             struct_entry.component_type,
             struct_entry.dimension,
             entry.format,
             index,
             entry.stride,
+            entry.offset,
+            entry.offset + entry.size,
+            entry.buffer_view.address(),
         );
         accessor_asset_views.push(entry);
     }
@@ -662,6 +695,8 @@ fn load_images(
             ctx_read.device.clone(),
             vk::SamplerCreateInfo {
                 s_type: vk::StructureType::SAMPLER_CREATE_INFO,
+                p_next: ptr::null(),
+                flags: vk::SamplerCreateFlags::empty(),
                 mag_filter: vk::Filter::LINEAR,
                 min_filter: vk::Filter::LINEAR,
                 mipmap_mode: vk::SamplerMipmapMode::LINEAR,
@@ -677,7 +712,6 @@ fn load_images(
                 max_lod: vk::LOD_CLAMP_NONE,
                 border_color: vk::BorderColor::INT_OPAQUE_BLACK,
                 unnormalized_coordinates: vk::FALSE,
-                ..std::default::Default::default()
             },
         )
         .unwrap()];
@@ -881,7 +915,7 @@ fn load_materials_from_primitives(
                     let gltf_material = &document.materials[index.value()];
                     let pbr_material = &gltf_material.pbr_metallic_roughness;
                     println!(
-                    "Primitive name: {:?}. Image name: {:?}. Texture name: {:?}. Texture index: {}",
+                    "Primitive name: {:?}. Image name: {:?}. Albedo name: {:?}. Texture index: {}.",
                     primitive.name,
                     pbr_material.base_color_texture.as_ref().and_then(|x| {
                         get_texture(x.index.value()).and_then(|x| {
@@ -897,8 +931,9 @@ fn load_materials_from_primitives(
                     }),
                     pbr_material.base_color_texture.as_ref().and_then(|x| {
                         get_texture(x.index.value()).and_then(|x| {
-                            scene.texture_storage.get_immutable(&x).unwrap()
-                                .name.clone()
+                            scene.image_storage.get_immutable(
+                            &scene.texture_storage.get_immutable(&x).unwrap()
+                                .image).unwrap().name.clone()
                         })
                     }),
                     pbr_material
@@ -973,16 +1008,6 @@ fn get_vk_format(
 /// Loads the textures into the scene into the dcument
 fn load_texture(scene: &mut assets::scene::Scene, document: &gltf::json::Root) {
     for (index, texture) in document.textures.iter().enumerate() {
-        assert_eq!(
-            scene
-                .image_storage
-                .get_immutable(&scene.images[texture.source.value()])
-                .unwrap()
-                .name
-                .clone()
-                .unwrap(),
-            format!("Unnamed image {}", texture.source.value())
-        );
         let asset_texture = assets::texture::Texture {
             name: Some(
                 texture
@@ -1026,8 +1051,7 @@ fn get_accessors_contents(
 
     // Temporary form for parallelization
     let intermediate: Vec<Option<&[u8]>> = buffer_contents
-        .par_chunks_exact(view_stride)
-        .into_par_iter()
+        .chunks_exact(view_stride)
         .map(|x| x.get(0..entry_size))
         .collect();
 
@@ -1145,7 +1169,11 @@ pub fn gltf_load(
                 index
             );
             let asset_mesh = assets::mesh::Mesh {
-                name: primitive.name.clone(),
+                name: Some(format!(
+                    "{} {}",
+                    primitive.name.clone().unwrap_or("Unnamed mesh".parse()?),
+                    index
+                )),
                 vertex_buffer: get_accessor(structs::AccessorSemantic::Gltf(
                     gltf::Semantic::Positions,
                 ))

@@ -30,7 +30,7 @@ impl Camera {
             world_up: up,
             up,
             view: glam::Mat4::look_at_rh(position, position + front, up),
-            speed: 0.05,
+            speed: 8.0,
             pitch: 0.0,
             yaw: 0.0,
         }
@@ -50,7 +50,7 @@ impl Camera {
         let look_at: glam::Mat4 =
             glam::Mat4::look_at_rh(self.position, self.position + self.front, self.up);
         self.view = look_at;
-        println!("{}", self.position);
+        //println!("{}", self.position);
 
         look_at
     }
