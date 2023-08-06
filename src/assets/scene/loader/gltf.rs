@@ -5,12 +5,13 @@ use crate::{app, assets};
 use anyhow::Result;
 use ash::vk;
 use gltf;
-use gltf::image::Format;
-use phobos::{IncompleteCmdBuffer, TransferCmdBuffer};
+use image::EncodableLayout;
+use phobos::{buffer, IncompleteCmdBuffer, TransferCmdBuffer};
 use rayon::prelude::*;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ptr;
 use std::sync::{Arc, RwLock};
+use std::{fs, io, path, ptr};
 
 mod structs {
     use crate::assets;
@@ -60,17 +61,92 @@ mod structs {
     }
 }
 
+fn load_buffers(
+    document: &gltf::Document,
+    path: &std::path::PathBuf,
+    bin: Option<Cow<[u8]>>,
+) -> Result<Vec<Vec<u8>>> {
+    // Load buffers using in-built gltf tooling
+    let buffer_data = gltf::import_buffers(document, path.parent(), bin.map(|x| x.to_vec()));
+    if let Ok(buffer_data) = buffer_data {
+        let mut buffers: Vec<Vec<u8>> = Vec::with_capacity(buffer_data.len());
+        buffer_data.into_iter().for_each(|x| {
+            buffers.push(x.0);
+        });
+        Ok(buffers)
+    } else {
+        Err(anyhow::bail!("Failed to load buffer"))
+    }
+}
+
+fn load_image_data(
+    document: &gltf::json::Root,
+    gltf_path: &path::PathBuf,
+    buffers_data: &[Vec<u8>],
+) -> Vec<image::DynamicImage> {
+    let images: Vec<image::DynamicImage> = document
+        .images
+        .par_iter()
+        .map(|gltf_image| {
+            if let Some(buffer_view) = gltf_image.buffer_view {
+                // Load image for buffers
+                let buffer_view = &document.buffer_views[buffer_view.value()];
+                let offset = buffer_view.byte_offset.unwrap_or(0) as usize;
+                let end = offset + buffer_view.byte_length as usize;
+                // Just assume we cannot have strides in our image buffers
+                assert!(buffer_view.byte_stride.is_none());
+                let data: &[u8] = &buffers_data[buffer_view.buffer.value()][offset..end];
+                let format: image::ImageFormat =
+                    match gltf_image.mime_type.as_ref().unwrap().0.as_str() {
+                        "image/jpeg" => image::ImageFormat::Jpeg,
+                        "image/png" => image::ImageFormat::Png,
+                        _ => panic!("Unsupported image type found"),
+                    };
+                let image: image::DynamicImage =
+                    image::load_from_memory_with_format(data, format).unwrap();
+                image
+            } else if let Some(uri) = gltf_image.uri.as_ref() {
+                // Load image from texture
+                let path = path::Path::new(uri.as_str());
+                let image: image::DynamicImage =
+                    image::open(gltf_path.parent().unwrap().join(path)).unwrap();
+                image
+            } else {
+                panic!("Unable to load file properly");
+            }
+        })
+        .collect();
+    images
+}
+
 /// Deserialize imported gltf file
-fn deserialize(
+fn deserialize<'a>(
     path: std::path::PathBuf,
-) -> Result<(
-    gltf::json::Root,
-    Vec<gltf::buffer::Data>,
-    Vec<gltf::image::Data>,
-)> {
-    let (document, buffers, images) = gltf::import(path)?;
-    let mut document_json = document.clone().into_json();
-    Ok((document_json, buffers, images))
+) -> Result<(gltf::json::Root, Vec<Vec<u8>>, Vec<image::DynamicImage>)> {
+    // Create a reader
+    let file = fs::File::open(&path)?;
+    let mut buf_reader = io::BufReader::new(file);
+
+    let (document, bin): (gltf::Document, Option<Cow<'a, [u8]>>) =
+        match path.extension().unwrap().to_str().unwrap() {
+            "gltf" => {
+                let gltf = gltf::Gltf::from_reader(buf_reader)?;
+                (gltf.document, None)
+            }
+            "glb" => {
+                let glb = gltf::Glb::from_reader(buf_reader)?;
+                let cursor = std::io::Cursor::new(&glb.json);
+                let gltf = gltf::Gltf::from_reader(cursor)?;
+                (gltf.document, glb.bin)
+            }
+            _ => {
+                return Err(anyhow::bail!("Invalid image"));
+            }
+        };
+    let buffer_data = load_buffers(&document, &path, bin)?;
+    let document = document.into_json();
+    let image_data = load_image_data(&document, &path, &buffer_data);
+    Ok((document, buffer_data, image_data))
 }
 
 /// Turn scene graph into a flat vector
@@ -346,7 +422,7 @@ fn get_accessors_from_primitives(
     context: Arc<RwLock<app::Context>>,
     primitives: &mut [structs::GltfPrimitive],
     document: &gltf::json::Root,
-    buffers: &[gltf::buffer::Data],
+    buffers: &[Vec<u8>],
 ) -> (Vec<assets::buffer_view::AttributeView<u8>>, phobos::Buffer) {
     // COLLECT ALL ACCESSORS' CONTENTS INTO MONOLITHIC BUFFER
     let mut monolithic_buffer: Vec<u8> = Vec::new();
@@ -663,7 +739,7 @@ fn load_images(
     context: Arc<RwLock<app::Context>>,
     scene: &mut assets::scene::Scene,
     document: &gltf::json::Root,
-    images: &[gltf::image::Data],
+    images: &[image::DynamicImage],
 ) {
     {
         let ctx_read = context.read().unwrap();
@@ -702,9 +778,11 @@ fn load_images(
     let mut transfer_buffers: Vec<phobos::Buffer> = Vec::new();
 
     {
-        // Make transfer buffers
-        for (index, image) in document.images.iter().enumerate() {
+        for (index, gltf_image) in document.images.iter().enumerate() {
             let image_data = &images[index];
+
+            /*
+            // Legacy conversion
             // Do some type conversions first
             // All types should be 8_UNORM
             let image_contents = image_data.pixels.as_slice();
@@ -733,12 +811,15 @@ fn load_images(
                     normalize_bytes_slice_type::<f32, u8>(image_contents).as_slice(),
                 ),
             };
+             */
+            let image_data = image_data.to_rgba8(); // All images much be rgba
+
             transfer_buffers.push(
                 memory::make_transfer_buffer(
                     context.clone(),
-                    image_contents.as_slice(),
+                    &image_data.into_raw(),
                     None,
-                    image
+                    gltf_image
                         .name
                         .as_ref()
                         .unwrap_or(&String::from("Unnamed"))
@@ -760,8 +841,8 @@ fn load_images(
                 ctx_write.device.clone(),
                 &mut ctx_write.allocator,
                 phobos::image::ImageCreateInfo {
-                    width: image_data.width,
-                    height: image_data.height,
+                    width: image_data.width(),
+                    height: image_data.height(),
                     depth: 1,
                     usage: vk::ImageUsageFlags::TRANSFER_SRC
                         | vk::ImageUsageFlags::TRANSFER_DST
@@ -1020,7 +1101,7 @@ fn get_accessors_contents(
     accessor: &gltf::json::Accessor,
     buffer_view: &gltf::json::buffer::View,
     document: &gltf::json::Root,
-    buffers: &[gltf::buffer::Data],
+    buffers: &[Vec<u8>],
 ) -> Vec<u8> {
     let total_byte_offset = (accessor.byte_offset + buffer_view.byte_offset.unwrap_or(0)) as usize;
     let entry_size =
@@ -1036,7 +1117,7 @@ fn get_accessors_contents(
 
     let buffer = &buffers[buffer_view.buffer.value()];
     let buffer_contents =
-        &buffer.0[total_byte_offset..(total_byte_offset + view_stride * (accessor.count as usize))];
+        &buffer[total_byte_offset..(total_byte_offset + view_stride * (accessor.count as usize))];
     let mut new_contents: Vec<u8> = Vec::with_capacity(entry_size * (accessor.count as usize));
 
     // Temporary form for parallelization
