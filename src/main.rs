@@ -29,7 +29,9 @@ struct Raytracing {
     ctx: Arc<RwLock<app::Context>>,
     render_extent: vk::Extent2D,
     color: Attachment,
+    storage_color: Attachment,
     deferred_delete: DeletionQueue<Attachment>,
+    frame_id: u32,
 }
 
 struct Attachment {
@@ -106,20 +108,20 @@ impl app::App for Raytracing {
             //path: std::path::PathBuf::from(gltf_sample_name("Lantern")),
             //path: std::path::PathBuf::from(gltf_sample_name("BoomBoxWithAxes")),
             //path: std::path::PathBuf::from(
-            //    "C:/Users/Danny/Documents/deccer-cubes/SM_Deccer_Cubes_Merged_Texture_Atlas.gltf",
+            //    "C:/Users/Danny/Documents/deccer-cubes/SM_Deccer_Cubes_Textured.gltf",
             //),
             //path: std::path::PathBuf::from(gltf_sample_name("TextureCoordinateTest")),
             //path: std::path::PathBuf::from(gltf_sample_name("Sponza")),
-            //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/Bistro/bistro.glb"),
+            path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/Bistro/bistro.glb"),
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/minecraft_castle/scene.gltf",
             //),
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/among_us_astronaut_-_clay/scene.gltf",
             //),
-            path: std::path::PathBuf::from(
-                "C:/Users/Danny/Documents/Assets/cyberpunk_2077_-_quadra_v-tech/scene.gltf",
-            ),
+            //path: std::path::PathBuf::from(
+            //    "C:/Users/Danny/Documents/Assets/cyberpunk_2077_-_quadra_v-tech/scene.gltf",
+            //),
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/forest_demo/scene.gltf",
             //),
@@ -186,6 +188,14 @@ impl app::App for Raytracing {
             },
         )
         .unwrap();
+        let storage_attachment = make_attachments(
+            ctx.clone(),
+            vk::Extent2D {
+                width: 800,
+                height: 600,
+            },
+        )
+        .unwrap();
         let ctx_read = ctx.read().unwrap();
         let sampler = phobos::Sampler::default(ctx_read.device.clone())?;
         Ok(Self {
@@ -202,8 +212,10 @@ impl app::App for Raytracing {
                 height: 600,
             },
             color: color_attachment,
+            storage_color: storage_attachment,
             deferred_delete: DeletionQueue::new(4),
             ctx: ctx.clone(),
+            frame_id: 0,
         })
     }
 
@@ -216,11 +228,12 @@ impl app::App for Raytracing {
             self.render_extent.width as f32 / self.render_extent.height as f32;
         let swap = phobos::image!("swapchain");
         let rt_image = phobos::image!("rt_out");
+        let old_image = phobos::image!("old_image");
 
         let mut pool = phobos::pool::LocalPool::new(ctx.resource_pool.clone())?;
-
         let rt_pass = phobos::PassBuilder::new("raytrace")
             .write_storage_image(&rt_image, phobos::PipelineStage::RAY_TRACING_SHADER_KHR)
+            .write_storage_image(&old_image, phobos::PipelineStage::RAY_TRACING_SHADER_KHR)
             .execute_fn(|cmd, ifc, bindings, _| {
                 let view = self.camera.view;
                 let mut projection = glam::Mat4::perspective_rh(
@@ -283,6 +296,11 @@ impl app::App for Raytracing {
                             .to_c_struct(scene_read.deref())
                     })
                     .collect::<Vec<assets::material::CMaterial>>();
+                // Convert materials into bytes
+                let mut material_slice_bytes: Vec<u8> = Vec::new();
+                for material in material_slice.into_iter() {
+                    material_slice_bytes.extend_from_slice(bytemuck::bytes_of(&material));
+                }
 
                 let mesh_slice = self.acceleration_structure.addresses.clone();
 
@@ -291,9 +309,9 @@ impl app::App for Raytracing {
                     .unwrap()
                     .copy_from_slice(mesh_slice.as_slice());
                 material_descriptor_scratch_buffer
-                    .mapped_slice::<assets::material::CMaterial>()
+                    .mapped_slice::<u8>()
                     .unwrap()
-                    .copy_from_slice(material_slice.as_slice());
+                    .copy_from_slice(material_slice_bytes.as_slice());
 
                 let images: Vec<phobos::ImageView> = scene_read
                     .images
@@ -314,6 +332,7 @@ impl app::App for Raytracing {
                     .get_immutable(scene_read.samplers.get(0).unwrap())
                     .unwrap();
                 //println!("[Frame]: {}", images.len());
+                self.frame_id += 1;
                 cmd.bind_ray_tracing_pipeline("rt")?
                     .bind_storage_buffer(1, 1, &object_description_sratch_buffer)
                     .expect("Failed to bind storage buffer")
@@ -323,6 +342,7 @@ impl app::App for Raytracing {
                     .expect("Failed to bind image array")
                     .push_constant(vk::ShaderStageFlags::RAYGEN_KHR, 0, &view)
                     .push_constant(vk::ShaderStageFlags::RAYGEN_KHR, 64, &projection)
+                    .push_constant(vk::ShaderStageFlags::RAYGEN_KHR, 128, &self.frame_id)
                     .bind_acceleration_structure(
                         0,
                         0,
@@ -334,6 +354,7 @@ impl app::App for Raytracing {
                             .unwrap(),
                     )?
                     .resolve_and_bind_storage_image(0, 1, &rt_image, bindings)?
+                    .resolve_and_bind_storage_image(0, 2, &old_image, bindings)?
                     .trace_rays(self.render_extent.width, self.render_extent.height, 1)
             })
             .build();
@@ -372,6 +393,7 @@ impl app::App for Raytracing {
         let mut bindings = phobos::PhysicalResourceBindings::new();
         bindings.bind_image("swapchain", &ifc.swapchain_image);
         bindings.bind_image("rt_out", &self.color.view);
+        bindings.bind_image("old_image", &self.storage_color.view);
         let cmd = ctx.execution_manager.on_domain::<All>()?;
         let cmd = graph.record(cmd, &bindings, &mut pool, None, &mut ())?;
         let cmd = cmd.finish()?;
@@ -408,13 +430,24 @@ impl app::App for Raytracing {
                         },
                     )
                     .unwrap();
+                    let mut color_storage = make_attachments(
+                        self.ctx.clone(),
+                        vk::Extent2D {
+                            width: new_size.width,
+                            height: new_size.height,
+                        },
+                    )
+                    .unwrap();
 
                     self.render_extent = vk::Extent2D {
                         width: new_size.width,
                         height: new_size.height,
                     };
                     std::mem::swap(&mut self.color, &mut color);
+                    std::mem::swap(&mut self.storage_color, &mut color_storage);
                     self.deferred_delete.push(color);
+                    self.deferred_delete.push(color_storage);
+                    self.frame_id = 0;
                 }
                 winit::event::WindowEvent::KeyboardInput { input, .. } => match input {
                     winit::event::KeyboardInput {
@@ -424,21 +457,27 @@ impl app::App for Raytracing {
                     } => match (virtual_keycode, state) {
                         (Some(VirtualKeyCode::W), ElementState::Pressed) => {
                             self.camera.position += camera_front * camera_speed * delta_time;
+                            self.frame_id = 0;
                         }
                         (Some(VirtualKeyCode::S), ElementState::Pressed) => {
                             self.camera.position -= camera_front * camera_speed * delta_time;
+                            self.frame_id = 0;
                         }
                         (Some(VirtualKeyCode::A), ElementState::Pressed) => {
                             self.camera.position -= right * camera_speed * delta_time;
+                            self.frame_id = 0;
                         }
                         (Some(VirtualKeyCode::D), ElementState::Pressed) => {
                             self.camera.position += right * camera_speed * delta_time;
+                            self.frame_id = 0;
                         }
                         (Some(VirtualKeyCode::Q), ElementState::Pressed) => {
                             self.camera.position += camera_up * camera_speed * delta_time;
+                            self.frame_id = 0;
                         }
                         (Some(VirtualKeyCode::E), ElementState::Pressed) => {
                             self.camera.position -= camera_up * camera_speed * delta_time;
+                            self.frame_id = 0;
                         }
                         _ => {}
                     },
@@ -464,6 +503,7 @@ impl app::App for Raytracing {
                         self.camera.pitch += offset_position.y;
                         self.camera.pitch = self.camera.pitch.clamp(-89.0f32, 89.0f32);
                         self.last_camera_pos = Some(current_position);
+                        self.frame_id = 0;
                     }
                 }
                 winit::event::WindowEvent::CursorLeft { .. } => {

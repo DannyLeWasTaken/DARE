@@ -390,9 +390,6 @@ fn get_accessors_from_primitives(
 
             // Get accessors contents
             let accessor_contents = get_accessors_contents(accessor, view, document, buffers);
-            if accessor.type_.unwrap().multiplicity() == 2 {
-                println!("{:?}", bytemuck::cast_slice::<u8, f32>(&accessor_contents));
-            }
             // Convert accessor dimensions first
             let accessor_contents = match accessor.component_type.unwrap().0 {
                 ComponentType::I8 => convert_dimensions::<i8>(
@@ -717,14 +714,15 @@ fn load_images(
                 Format::R8G8B8 | Format::R16G16B16 | Format::R32G32B32FLOAT => 3,
                 Format::R8G8B8A8 | Format::R16G16B16A16 | Format::R32G32B32A32FLOAT => 4,
             };
+            let target_dimension_size = 4;
             let image_contents = match image_data.format {
                 Format::R8 | Format::R8G8 | Format::R8G8B8 | Format::R8G8B8A8 => {
-                    convert_dimensions::<u8>(dimension_size, 4, image_contents)
+                    convert_dimensions::<u8>(dimension_size, target_dimension_size, image_contents)
                 }
                 Format::R16 | Format::R16G16 | Format::R16G16B16 | Format::R16G16B16A16 => {
                     convert_dimensions::<u8>(
                         dimension_size,
-                        4,
+                        target_dimension_size,
                         normalize_bytes_slice_type::<u16, u8>(image_contents).as_slice(),
                     )
                 }
@@ -768,16 +766,7 @@ fn load_images(
                     usage: vk::ImageUsageFlags::TRANSFER_SRC
                         | vk::ImageUsageFlags::TRANSFER_DST
                         | vk::ImageUsageFlags::SAMPLED,
-                    format: match image_data.format {
-                        Format::R8 | Format::R16 => vk::Format::R8G8B8A8_UNORM,
-                        Format::R8G8 | Format::R16G16 => vk::Format::R8G8B8A8_UNORM,
-                        Format::R8G8B8 | Format::R16G16B16 | Format::R32G32B32FLOAT => {
-                            vk::Format::R8G8B8A8_UNORM
-                        }
-                        Format::R8G8B8A8 | Format::R16G16B16A16 | Format::R32G32B32A32FLOAT => {
-                            vk::Format::R8G8B8A8_UNORM
-                        }
-                    },
+                    format: vk::Format::R8G8B8A8_UNORM,
                     samples: vk::SampleCountFlags::TYPE_1,
                     mip_levels: 1,
                     layers: 1,
@@ -891,6 +880,9 @@ fn load_materials_from_primitives(
                 None => assets::material::Material {
                     albedo_texture: None,
                     albedo_color: glam::Vec3::new(75f32 / 255f32, 0f32, 130f32 / 255f32),
+                    normal_texture: None,
+                    emissive_texture: None,
+                    emissive_factor: glam::Vec3::ZERO,
                 },
                 Some(index) => {
                     let gltf_material = &document.materials[index.value()];
@@ -931,12 +923,29 @@ fn load_materials_from_primitives(
                             0
                         );
                     }
+                    println!(
+                        "Normal should be: {}",
+                        gltf_material
+                            .normal_texture
+                            .as_ref()
+                            .map(|x| x.index.value() as i32)
+                            .unwrap_or(-1)
+                    );
                     assets::material::Material {
                         albedo_texture: pbr_material
                             .base_color_texture
                             .as_ref()
                             .and_then(|x| get_texture(x.index.value())),
                         albedo_color: glam::Vec3::from_slice(&pbr_material.base_color_factor.0),
+                        normal_texture: gltf_material
+                            .normal_texture
+                            .as_ref()
+                            .and_then(|x| get_texture(x.index.value())),
+                        emissive_texture: gltf_material
+                            .emissive_texture
+                            .as_ref()
+                            .and_then(|x| get_texture(x.index.value())),
+                        emissive_factor: glam::Vec3::from_slice(&gltf_material.emissive_factor.0),
                     }
                 }
             };
@@ -1118,9 +1127,22 @@ pub fn gltf_load(
             c_materials.push(mat.to_c_struct(&scene));
         }
 
+        // Convert into bytes + add padding
+        let mut c_materials_bytes: Vec<u8> = Vec::new();
+        const CMATERIAL_SIZE: usize = std::mem::size_of::<assets::material::CMaterial>();
+        for mat in c_materials.into_iter() {
+            let mat_bytes: [u8; CMATERIAL_SIZE] = unsafe { std::mem::transmute(mat) };
+
+            c_materials_bytes.extend_from_slice(&mat_bytes);
+
+            // Calculate padding to align to 16 bytes
+            //let padding: usize = (16 - (c_materials_bytes.len() % 16)) % 16;
+            //c_materials_bytes.extend(vec![0u8; padding]);
+        }
+
         let transfer_material = memory::make_transfer_buffer(
             context.clone(),
-            c_materials.as_slice(),
+            c_materials_bytes.as_slice(),
             None,
             "Material buffer",
         )

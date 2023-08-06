@@ -559,18 +559,6 @@ pub fn make_instances_buffer(
 
         bindless_mesh_info.push(mesh.to_c_struct(scene));
         mesh_index += 1;
-        println!("IT'S GOBLIN TIME");
-        if mesh.tex_buffer.is_some() {
-            println!(
-                "{} - {:?}",
-                bindless_mesh_info.last().unwrap().tex_buffer,
-                scene
-                    .attributes_storage
-                    .get_immutable(mesh.tex_buffer.as_ref().unwrap())
-                    .unwrap()
-                    .name
-            );
-        }
         mesh_index &= 0xFFFFFF;
     }
 

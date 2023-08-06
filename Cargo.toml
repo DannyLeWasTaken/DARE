@@ -16,7 +16,7 @@ glam = "0.24.1"
 ash = "0.37.3"
 log = "0.4.19"
 bytemuck = "1.13.1"
-crevice = {version = "0.13.0", features = ["std", "glam"] }
+crevice = { version = "0.13.0", features = ["std", "glam"] }
 base64 = "0.21.2"
 rayon = "1.7.0"
 num-traits = "0.2.16"

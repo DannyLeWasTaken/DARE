@@ -7,6 +7,9 @@ use crate::utils::handle_storage::Handle;
 pub struct Material {
     pub albedo_texture: Option<Handle<assets::texture::Texture>>,
     pub albedo_color: glam::Vec3,
+    pub normal_texture: Option<Handle<assets::texture::Texture>>,
+    pub emissive_texture: Option<Handle<assets::texture::Texture>>,
+    pub emissive_factor: glam::Vec3,
 }
 
 impl Eq for Material {}
@@ -19,26 +22,47 @@ impl Material {
                 .as_ref()
                 .map(|texture: &Handle<assets::texture::Texture>| {
                     scene
-                        .textures
-                        .iter()
-                        .position(|r| r == texture)
-                        .map(|x| x as i32)
-                        .unwrap_or(-1)
+                        .texture_storage
+                        .get_immutable(texture)
+                        .map(|x| {
+                            scene
+                                .images
+                                .iter()
+                                .position(|p| *p == x.image)
+                                .map(|x| x as i32)
+                                .unwrap_or(-1i32)
+                        })
+                        .unwrap_or(-1i32)
                 })
-                .unwrap_or(-1)
+                .unwrap_or(-1i32)
+        };
+        let merge = |value: Option<glam::Vec3>, index: i32| -> [f32; 4] {
+            let mut vec4 = [0.0; 4];
+            vec4[0..3].copy_from_slice(&value.map(|x| x.to_array()).unwrap_or([0f32, 0f32, 0f32]));
+            vec4[3] = index as f32;
+            vec4
         };
         let material = CMaterial {
-            albedo_texture: get_index(&self.albedo_texture),
-            albedo_color: self.albedo_color.to_array(),
+            albedo: merge(Some(self.albedo_color), get_index(&self.albedo_texture)),
+            normal: merge(None, get_index(&self.normal_texture)),
+            emissive: merge(
+                Some(self.emissive_factor),
+                get_index(&self.emissive_texture),
+            ),
         };
+        //println!("I think normal is: {}", material.normal[3]);
         material
     }
 }
 
 /// Represents the material c-struct for use in shaders
-#[repr(C, align(4))]
+#[repr(C, align(16))]
 #[derive(Copy, Clone, PartialOrd, PartialEq)]
 pub struct CMaterial {
-    pub albedo_texture: i32,
-    pub albedo_color: [f32; 3],
+    pub albedo: [f32; 4],
+    pub normal: [f32; 4],
+    pub emissive: [f32; 4],
 }
+// Ensure that CMaterial is compatible with bytemuck
+unsafe impl bytemuck::Pod for CMaterial {}
+unsafe impl bytemuck::Zeroable for CMaterial {}

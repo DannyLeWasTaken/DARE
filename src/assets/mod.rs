@@ -1,7 +1,6 @@
 pub mod buffer;
 pub mod buffer_view;
 pub mod data_source;
-pub mod gltf_asset_loader2;
 pub mod image;
 pub mod loader;
 pub mod material;

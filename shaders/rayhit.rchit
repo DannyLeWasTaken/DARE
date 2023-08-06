@@ -9,6 +9,7 @@
 #extension GL_EXT_buffer_reference2 : require
 
 #include "ray_struct.inc.glsl"
+#include "sampler.inc.glsl"
 
 hitAttributeEXT vec2 attribs;
 
@@ -40,6 +41,10 @@ void main() {
     //ObjectDescriptionArray   object_descriptions = ObjectDescriptionArray(DescriptionAddressesArray.i[0].object);
     //MaterialDescriptionArray material_descriptions = ObjectDescriptionArray(DescriptionAddressesArray.i[0].material);
     ObjectDescription object_resource = ObjectDescriptionArray.i[gl_InstanceCustomIndexEXT];
+    if (payload.missed == true) {
+        return;
+    }
+
     if (object_resource.material > -1) {
         MaterialDescription material_resource = MaterialDescriptionArray.m[object_resource.material];
         Vertices vertices = Vertices(object_resource.vertex_buffer);
@@ -55,29 +60,35 @@ void main() {
         vec3 v1 = vertices.v[ind.y];
         vec3 v2 = vertices.v[ind.z];
         const vec3 position = v0 * barycentrics.x + v1 * barycentrics.y + v2 * barycentrics.z;
-        const vec3 world_position = vec3(gl_ObjectToWorldEXT * vec4(position, 1.0));  // Transforming the position to world space
+        //const vec3 world_position = vec3(gl_ObjectToWorldEXT * vec4(position, 1.0));  // Transforming the position to world space
+        const vec3 world_position = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
 
         // Normal
         vec3 normal;
         vec3 world_normal;
         const vec3 geometry_normal = normalize(cross(v0 - v1, v2 - v0));
-        if (object_resource.normal_buffer > 0) {
+        if (object_resource.tex_buffer > 0 && material_resource.normal.w > -1) {
+            // Tex coords of the triangle
+            vec2 t_v0 = tex_coords.v[ind.x];
+            vec2 t_v1 = tex_coords.v[ind.y];
+            vec2 t_v2 = tex_coords.v[ind.z];
+            vec2 tex_coords = t_v0 * barycentrics.x + t_v1 * barycentrics.y + t_v2 * barycentrics.z;
+            normal = normalize(texture(texture_samplers[nonuniformEXT(int(material_resource.albedo.w))], tex_coords).rgb);
+        } else if (object_resource.normal_buffer > 0) {
             vec3 n_v0 = normals.v[ind.x];
             vec3 n_v1 = normals.v[ind.y];
             vec3 n_v2 = normals.v[ind.z];
             normal = normalize(n_v0 * barycentrics.x + n_v1 * barycentrics.y + n_v2 * barycentrics.z);
-            world_normal = normalize(vec3(normal * gl_WorldToObjectEXT));
         } else {
             normal = geometry_normal;
-            world_normal = normalize(vec3(normal * gl_WorldToObjectEXT));
         }
+        world_normal = normalize(vec3(normal * gl_WorldToObjectEXT));
 
 
 
         //const sampler2D image = texture_samplers[nonuniformEXT(0)];
         //payload.hit_value = vec3(0);
-
-        if (material_resource.albedo_texture > -1 && object_resource.tex_buffer > 0 ) {
+        if (material_resource.albedo.w > -1 && object_resource.tex_buffer > 0 ) {
             // Tex coords of the triangle
             vec2 t_v0 = tex_coords.v[ind.x];
             vec2 t_v1 = tex_coords.v[ind.y];
@@ -86,12 +97,16 @@ void main() {
             //t_v1.y = 1.0 - t_v1.y;
             //t_v2.y = 1.0 - t_v2.y;
             vec2 tex_coords = t_v0 * barycentrics.x + t_v1 * barycentrics.y + t_v2 * barycentrics.z;
-            payload.hit_value = texture(texture_samplers[nonuniformEXT(material_resource.albedo_texture)], tex_coords).rgb
-            * material_resource.albedo;
-            if (gl_LaunchIDEXT.x == 0 && gl_LaunchIDEXT.y == 0) {
-                debugPrintfEXT("%f %f i:%i ici:%i ad:%lu \n", t_v0.x, t_v0.y, ind.x, gl_InstanceCustomIndexEXT, object_resource.tex_buffer);
+            payload.hit_value *= texture(texture_samplers[nonuniformEXT(int(material_resource.albedo.w))], tex_coords).rgb
+            * material_resource.albedo.xyz;
+
+            if (material_resource.emissive.w > -1) {
+                payload.incoming_light += payload.hit_value * texture(texture_samplers[nonuniformEXT(int(material_resource.emissive.w))], tex_coords).rgb * material_resource.emissive.rgb;
+            } else {
+                payload.incoming_light += payload.hit_value * material_resource.emissive.rgb;
             }
-            //payload.hit_value *= vec3(t_v0, 0);
+
+            //payload.hit_value = vec3(tex_coords, 0);
             //payload.hit_value = vec3(0, attribs.x, attribs.y);
             //payload.hit_value = vec3(hsv_to_rgb(dvec3(double(object_resource.normal_buffer) * double(M_GOLDEN_CONJ), 0.875, 0.85)));
             //payload.hit_value = vec3(hsv_to_rgb(dvec3(double(object_resource.tex_buffer) * double(M_GOLDEN_CONJ), 0.875, 0.85)));
@@ -99,12 +114,17 @@ void main() {
             //payload.hit_value = vec3(hsv_to_rgb(vec3(double(material_resource.albedo_texture) * double(M_GOLDEN_CONJ), 0.875, 0.85)));
             //payload.hit_value = vec3(tex_coord_0, 0);
         } else {
-            payload.hit_value = material_resource.albedo;
-            payload.hit_value = vec3(0.1, 0.1, 0.1);
+            payload.hit_value *= material_resource.albedo.xyz;
+            payload.incoming_light += material_resource.emissive.xyz * payload.hit_value;
             //payload.hit_value = hsv_to_rgb(vec3(float(gl_InstanceCustomIndexEXT) * M_GOLDEN_CONJ, 0.875, 0.85));
         }
-    } else {
-        //payload.hit_value = hsv_to_rgb(vec3(float(object_resource.material) * M_GOLDEN_CONJ, 0.875, 0.85));
-        payload.hit_value = vec3(0.1, 0.1, 0.1);
+        payload.ray_origin = world_position;
+
+        vec3 tangent, bitangent;
+        createCoordinateSystem(world_normal, tangent, bitangent);
+        vec3 ray_direction = samplingHemisphereUniform(payload.seed, tangent, bitangent, world_normal);
+        payload.ray_direction = ray_direction;
     }
+    payload.seed += 1;
+    payload.bounces += 1;
 }
