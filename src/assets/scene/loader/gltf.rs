@@ -778,43 +778,14 @@ fn load_images(
     let mut transfer_buffers: Vec<phobos::Buffer> = Vec::new();
 
     {
-        for (index, gltf_image) in document.images.iter().enumerate() {
-            let image_data = &images[index];
+        transfer_buffers = document
+            .images
+            .iter()
+            .enumerate()
+            .map(|(index, gltf_image)| {
+                let image_data = &images[index];
+                let image_data = image_data.to_rgba8(); // All images much be rgba
 
-            /*
-            // Legacy conversion
-            // Do some type conversions first
-            // All types should be 8_UNORM
-            let image_contents = image_data.pixels.as_slice();
-            let dimension_size = match image_data.format {
-                Format::R8 | Format::R16 => 1,
-                Format::R8G8 | Format::R16G16 => 2,
-                Format::R8G8B8 | Format::R16G16B16 | Format::R32G32B32FLOAT => 3,
-                Format::R8G8B8A8 | Format::R16G16B16A16 | Format::R32G32B32A32FLOAT => 4,
-            };
-            let target_dimension_size = 4;
-            let image_contents = match image_data.format {
-                Format::R8 | Format::R8G8 | Format::R8G8B8 | Format::R8G8B8A8 => {
-                    convert_dimensions::<u8>(dimension_size, target_dimension_size, image_contents)
-                }
-                Format::R16 | Format::R16G16 | Format::R16G16B16 | Format::R16G16B16A16 => {
-                    convert_dimensions::<u8>(
-                        dimension_size,
-                        target_dimension_size,
-                        normalize_bytes_slice_type::<u16, u8>(image_contents).as_slice(),
-                    )
-                }
-
-                Format::R32G32B32FLOAT | Format::R32G32B32A32FLOAT => convert_dimensions::<u8>(
-                    dimension_size,
-                    4,
-                    normalize_bytes_slice_type::<f32, u8>(image_contents).as_slice(),
-                ),
-            };
-             */
-            let image_data = image_data.to_rgba8(); // All images much be rgba
-
-            transfer_buffers.push(
                 memory::make_transfer_buffer(
                     context.clone(),
                     &image_data.into_raw(),
@@ -825,9 +796,9 @@ fn load_images(
                         .unwrap_or(&String::from("Unnamed"))
                         .as_str(),
                 )
-                .unwrap(),
-            );
-        }
+                .unwrap()
+            })
+            .collect();
     }
     {
         let mut ctx_write = context.write().unwrap();
