@@ -1,4 +1,4 @@
-struct Payload {
+struct Ray {
     vec3 ray_direction;
     vec3 ray_origin;
     vec2 uv;
@@ -11,6 +11,11 @@ struct Payload {
     uint depth; // # of iterations the current ray has gone through
     uint bounces; // # of bounces (in this case are not reflections)
     uint reflections; // # of reflections
+};
+
+struct Payload {
+    Ray current;
+    Ray previous;
 };
 
 /// Describes the material properties of the object

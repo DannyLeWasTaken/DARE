@@ -41,7 +41,7 @@ void main() {
     //ObjectDescriptionArray   object_descriptions = ObjectDescriptionArray(DescriptionAddressesArray.i[0].object);
     //MaterialDescriptionArray material_descriptions = ObjectDescriptionArray(DescriptionAddressesArray.i[0].material);
     ObjectDescription object_resource = ObjectDescriptionArray.i[gl_InstanceCustomIndexEXT];
-    if (payload.missed == true) {
+    if (payload.current.missed == true) {
         return;
     }
 
@@ -97,13 +97,13 @@ void main() {
             //t_v1.y = 1.0 - t_v1.y;
             //t_v2.y = 1.0 - t_v2.y;
             vec2 tex_coords = t_v0 * barycentrics.x + t_v1 * barycentrics.y + t_v2 * barycentrics.z;
-            payload.hit_value *= texture(texture_samplers[nonuniformEXT(int(material_resource.albedo.w))], tex_coords).rgb
+            payload.current.hit_value *= texture(texture_samplers[nonuniformEXT(int(material_resource.albedo.w))], tex_coords).rgb
             * material_resource.albedo.xyz;
 
             if (material_resource.emissive.w > -1) {
-                payload.incoming_light += payload.hit_value * texture(texture_samplers[nonuniformEXT(int(material_resource.emissive.w))], tex_coords).rgb * material_resource.emissive.rgb;
+                payload.current.incoming_light += payload.current.hit_value * texture(texture_samplers[nonuniformEXT(int(material_resource.emissive.w))], tex_coords).rgb * material_resource.emissive.rgb;
             } else {
-                payload.incoming_light += payload.hit_value * material_resource.emissive.rgb;
+                payload.current.incoming_light += payload.current.hit_value * material_resource.emissive.rgb;
             }
 
             //payload.hit_value = vec3(tex_coords, 0);
@@ -114,17 +114,17 @@ void main() {
             //payload.hit_value = vec3(hsv_to_rgb(vec3(double(material_resource.albedo_texture) * double(M_GOLDEN_CONJ), 0.875, 0.85)));
             //payload.hit_value = vec3(tex_coord_0, 0);
         } else {
-            payload.hit_value *= material_resource.albedo.xyz;
-            payload.incoming_light += material_resource.emissive.xyz * payload.hit_value;
+            payload.current.hit_value *= material_resource.albedo.xyz;
+            payload.current.incoming_light += material_resource.emissive.xyz * payload.current.hit_value * 10.f;
             //payload.hit_value = hsv_to_rgb(vec3(float(gl_InstanceCustomIndexEXT) * M_GOLDEN_CONJ, 0.875, 0.85));
         }
-        payload.ray_origin = world_position;
+        payload.current.ray_origin = world_position;
 
         vec3 tangent, bitangent;
         createCoordinateSystem(world_normal, tangent, bitangent);
-        vec3 ray_direction = samplingHemisphereUniform(payload.seed, tangent, bitangent, world_normal);
-        payload.ray_direction = ray_direction;
+        vec3 ray_direction = samplingHemisphereUniform(payload.current.seed, tangent, bitangent, world_normal);
+        payload.current.ray_direction = ray_direction;
     }
-    payload.seed += 1;
-    payload.bounces += 1;
+    payload.current.seed += 1;
+    payload.current.bounces += 1;
 }
