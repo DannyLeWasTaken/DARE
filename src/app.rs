@@ -1,6 +1,7 @@
 use anyhow::Result;
 use phobos::prelude::vk;
 use phobos::prelude::*;
+use std::ptr;
 
 #[derive(Debug)]
 pub struct WindowContext {
@@ -80,11 +81,17 @@ impl Runner {
     ) -> Result<Self> {
         std::env::set_var("RUST_LOG", "trace");
         pretty_env_logger::init();
+        let shader_clock_feature = vk::PhysicalDeviceShaderClockFeaturesKHR {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR,
+            p_next: ptr::null_mut(),
+            shader_subgroup_clock: vk::TRUE,
+            shader_device_clock: vk::TRUE,
+        };
         let mut settings = phobos::AppBuilder::new()
             .version((1, 0, 0))
             .name(name)
             .validation(true)
-            .present_mode(phobos::vk::PresentModeKHR::MAILBOX)
+            .present_mode(vk::PresentModeKHR::MAILBOX)
             .scratch_chunk_size(1 * 1024u64)
             .gpu(phobos::GPURequirements {
                 dedicated: false,
@@ -107,7 +114,10 @@ impl Runner {
                 features: vk::PhysicalDeviceFeatures::builder()
                     .shader_int64(true)
                     .build(),
-                device_extensions: vec![String::from("VK_EXT_scalar_block_layout")],
+                device_extensions: vec![
+                    String::from("VK_EXT_scalar_block_layout"),
+                    String::from("VK_KHR_shader_clock"),
+                ],
                 ..Default::default()
             });
 
