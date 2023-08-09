@@ -10,7 +10,7 @@ layout(location = 0) rayPayloadInEXT Payload payload;
 
 void main() {
     if (payload.current.missed) {
-        payload.current.incoming_light += payload.current.hit_value * vec3(1.0);
+        payload.current.incoming_light += payload.current.hit_value * vec3(0.025);
     }
     payload.current.missed = true;
 }

@@ -27,8 +27,9 @@ struct MaterialDescription {
     vec4 normal; // x,y,z unused. w is texture index
     vec4 emissive;
     vec4 diffuse_factor;
-    vec4 specular_glossiness_factor; // rgb -> specular, a -> specular
+    vec4 specular_glossiness_factor; // rgb -> glossiness, a -> specular
     vec4 specular_glossiness_diffuse_texture; // r -> specular glossiness texture, b -> diffuse texture
+    vec4 metallic_roughness; // r -> metallic-roughness texture, g -> roughness, b -> metallness
 };
 
 /// Represents the values of a material description

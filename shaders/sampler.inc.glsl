@@ -6,7 +6,7 @@ vec3 samplingHemisphere(inout uint seed, in vec3 x, in vec3 y, in vec3 z)
 {
     #define M_PI 3.14159265
 
-  float r1 = rnd(seed);
+    float r1 = rnd(seed);
     float r2 = rnd(seed);
     float sq = sqrt(r1);
 

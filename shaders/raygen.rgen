@@ -49,8 +49,7 @@ void main() {
     const float min_dist = 0.001;
     const float max_dist = 10000.0;
 
-    while (!payload.current.missed && payload.current.depth <= 10 && payload.current.bounces <= 0) {
-        payload.previous = payload.current;
+    while (!payload.current.missed && payload.current.depth <= 10 && payload.current.bounces <= 4) {
         // Do the actual ray tracing
         traceRayEXT(
             tlas,                   // Top-level acceleration structure
@@ -65,11 +64,11 @@ void main() {
             max_dist,               // Maximum ray range
             0                       // Location of the ray payload
         );
+        payload.previous = payload.current;
         payload.current.depth += 1;
     }
-    //payload.current = payload.current.missed ? payload.previous : payload.current;
+    payload.current = payload.current.missed ? payload.previous : payload.current;
     payload.current.missed = true;
-    /*
     traceRayEXT(
         tlas, // Top-level acceleration structure
         ray_flags, // Ray flags
@@ -83,7 +82,6 @@ void main() {
         max_dist, // Maximum ray range
         0                       // Location of the ray payload
     );
-    */
     if (pc.frame_id > 1) {
         vec3 old_color = imageLoad(old_image, ivec2(gl_LaunchIDEXT.xy)).rgb;
         // Caulcate contribution
