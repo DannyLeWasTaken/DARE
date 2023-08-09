@@ -73,7 +73,7 @@ void main() {
             vec2 t_v1 = tex_coords.v[ind.y];
             vec2 t_v2 = tex_coords.v[ind.z];
             vec2 tex_coords = t_v0 * barycentrics.x + t_v1 * barycentrics.y + t_v2 * barycentrics.z;
-            normal = normalize(texture(texture_samplers[nonuniformEXT(int(material_resource.albedo.w))], tex_coords).rgb);
+            normal = texture(texture_samplers[nonuniformEXT(int(material_resource.normal.w))], tex_coords).rgb;
         } else if (object_resource.normal_buffer > 0) {
             vec3 n_v0 = normals.v[ind.x];
             vec3 n_v1 = normals.v[ind.y];
@@ -125,6 +125,5 @@ void main() {
         vec3 ray_direction = samplingHemisphereUniform(payload.current.seed, tangent, bitangent, world_normal);
         payload.current.ray_direction = ray_direction;
     }
-    payload.current.seed += 1;
     payload.current.bounces += 1;
 }
