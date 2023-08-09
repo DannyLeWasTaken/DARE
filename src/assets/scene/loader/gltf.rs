@@ -7,6 +7,7 @@ use ash::vk;
 use gltf;
 use image::EncodableLayout;
 use phobos::{buffer, IncompleteCmdBuffer, TransferCmdBuffer};
+use rayon::join;
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -107,9 +108,11 @@ fn load_image_data(
                 image
             } else if let Some(uri) = gltf_image.uri.as_ref() {
                 // Load image from texture
-                let path = path::Path::new(uri.as_str());
-                let image: image::DynamicImage =
-                    image::open(gltf_path.parent().unwrap().join(path)).unwrap();
+                let decoded_uri = percent_encoding::percent_decode_str(uri.as_str())
+                    .decode_utf8_lossy()
+                    .into_owned();
+                let relative_path = gltf_path.parent().unwrap().join(decoded_uri);
+                let image: image::DynamicImage = image::open(relative_path).unwrap();
                 image
             } else {
                 panic!("Unable to load file properly");
@@ -928,7 +931,7 @@ fn load_materials_from_primitives(
         let primitive_material = match primitive.handle.as_ref().unwrap().material {
             None => assets::material::Material {
                 albedo_texture: None,
-                albedo_color: glam::Vec3::new(75f32 / 255f32, 0f32, 130f32 / 255f32),
+                albedo_color: glam::Vec3::from([0.5, 0.5, 0.5]),
                 normal_texture: None,
                 emissive_texture: None,
                 emissive_factor: glam::Vec3::ZERO,
@@ -936,7 +939,10 @@ fn load_materials_from_primitives(
                 diffuse_texture: None,
                 specular_factor: glam::Vec3::ONE,
                 glossiness_factor: 1f32,
-                specular_glosiness_texture: None,
+                specular_glossiness_texture: None,
+                metallic_factor: 1.0,
+                roughness_factor: 1.0,
+                metallic_roughness_texture: None,
             },
             Some(index) => {
                 let gltf_material = &document.materials[index.value()];
@@ -1040,13 +1046,19 @@ fn load_materials_from_primitives(
                                 .unwrap_or(1f32)
                         })
                         .unwrap_or(1f32),
-                    specular_glosiness_texture: gltf_material.extensions.as_ref().and_then(|x| {
+                    specular_glossiness_texture: gltf_material.extensions.as_ref().and_then(|x| {
                         x.pbr_specular_glossiness.as_ref().and_then(|x| {
                             x.specular_glossiness_texture
                                 .as_ref()
                                 .and_then(|x| get_texture(x.index.value()))
                         })
                     }),
+                    metallic_factor: pbr_material.metallic_factor.0,
+                    roughness_factor: pbr_material.roughness_factor.0,
+                    metallic_roughness_texture: pbr_material
+                        .metallic_roughness_texture
+                        .as_ref()
+                        .and_then(|x| get_texture(x.index.value())),
                 }
             }
         };

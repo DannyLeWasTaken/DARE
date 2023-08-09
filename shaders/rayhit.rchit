@@ -88,42 +88,96 @@ void main() {
 
         //const sampler2D image = texture_samplers[nonuniformEXT(0)];
         //payload.hit_value = vec3(0);
+        vec3 final_color = payload.current.incoming_light;
+        vec3 hit_value = payload.current.hit_value;
+        vec3 albedo = vec3(1.0);
         if (material_resource.albedo.w > -1 && object_resource.tex_buffer > 0 ) {
             // Tex coords of the triangle
             vec2 t_v0 = tex_coords.v[ind.x];
             vec2 t_v1 = tex_coords.v[ind.y];
             vec2 t_v2 = tex_coords.v[ind.z];
-            //t_v0.y = 1.0 - t_v0.y;
-            //t_v1.y = 1.0 - t_v1.y;
-            //t_v2.y = 1.0 - t_v2.y;
             vec2 tex_coords = t_v0 * barycentrics.x + t_v1 * barycentrics.y + t_v2 * barycentrics.z;
-            payload.current.hit_value *= texture(texture_samplers[nonuniformEXT(int(material_resource.albedo.w))], tex_coords).rgb
-            * material_resource.albedo.xyz;
-
-            if (material_resource.emissive.w > -1) {
-                payload.current.incoming_light += payload.current.hit_value * texture(texture_samplers[nonuniformEXT(int(material_resource.emissive.w))], tex_coords).rgb * material_resource.emissive.rgb;
-            } else {
-                payload.current.incoming_light += payload.current.hit_value * material_resource.emissive.rgb;
-            }
-
-            //payload.hit_value = vec3(tex_coords, 0);
-            //payload.hit_value = vec3(0, attribs.x, attribs.y);
-            //payload.hit_value = vec3(hsv_to_rgb(dvec3(double(object_resource.normal_buffer) * double(M_GOLDEN_CONJ), 0.875, 0.85)));
-            //payload.hit_value = vec3(hsv_to_rgb(dvec3(double(object_resource.tex_buffer) * double(M_GOLDEN_CONJ), 0.875, 0.85)));
-            //payload.hit_value = hsv_to_rgb(vec3(float(gl_InstanceCustomIndexEXT) * M_GOLDEN_CONJ, 0.875, 0.85));
-            //payload.hit_value = vec3(hsv_to_rgb(vec3(double(material_resource.albedo_texture) * double(M_GOLDEN_CONJ), 0.875, 0.85)));
-            //payload.hit_value = vec3(tex_coord_0, 0);
+            albedo = texture(texture_samplers[nonuniformEXT(int(material_resource.albedo.w))], tex_coords).rgb
+            * material_resource.albedo.rgb;
         } else {
-            payload.current.hit_value *= material_resource.albedo.xyz;
-            payload.current.incoming_light += material_resource.emissive.xyz * payload.current.hit_value * 10.f;
-            //payload.hit_value = hsv_to_rgb(vec3(float(gl_InstanceCustomIndexEXT) * M_GOLDEN_CONJ, 0.875, 0.85));
+            albedo = material_resource.albedo.rgb;
         }
-        payload.current.ray_origin = world_position;
+        hit_value *= albedo;
+
+        vec3 specular = vec3(1.0);
+        float glossiness = 1.0;
+        if (material_resource.specular_glossiness_factor.r > -1) {
+            vec2 t_v0 = tex_coords.v[ind.x];
+            vec2 t_v1 = tex_coords.v[ind.y];
+            vec2 t_v2 = tex_coords.v[ind.z];
+            vec2 tex_coords = t_v0 * barycentrics.x + t_v1 * barycentrics.y + t_v2 * barycentrics.z;
+
+            vec4 specular = texture(texture_samplers[nonuniformEXT(int(material_resource.specular_glossiness_diffuse_texture.r))], tex_coords).rgba;
+            //specular = specular_glossiness.rgb * material_resource.specular_glossiness_factor.rgb;
+            //glossiness = specular_glossiness.a * material_resource.specular_glossiness_factor.a;
+        } else {
+            specular = material_resource.specular_glossiness_factor.rgb;
+            glossiness = material_resource.specular_glossiness_factor.a;
+        }
+
+        float metallic; // b-channel
+        float roughness; // g-channel
+        if (material_resource.metallic_roughness.r > -1) {
+            vec2 t_v0 = tex_coords.v[ind.x];
+            vec2 t_v1 = tex_coords.v[ind.y];
+            vec2 t_v2 = tex_coords.v[ind.z];
+            vec2 tex_coords = t_v0 * barycentrics.x + t_v1 * barycentrics.y + t_v2 * barycentrics.z;
+
+            vec4 metallic_roughness = texture(texture_samplers[nonuniformEXT(int(material_resource.metallic_roughness.r))], tex_coords).rgba;
+            roughness = metallic_roughness.g * material_resource.metallic_roughness.g;
+            metallic = metallic_roughness.b * material_resource.metallic_roughness.b;
+        } else {
+            roughness = material_resource.metallic_roughness.g;
+            metallic = material_resource.metallic_roughness.b;
+        }
+
+        vec3 emitted_light = vec3(0.0);
+        if (material_resource.emissive.w > -1 && object_resource.tex_buffer > 0) {
+            vec2 t_v0 = tex_coords.v[ind.x];
+            vec2 t_v1 = tex_coords.v[ind.y];
+            vec2 t_v2 = tex_coords.v[ind.z];
+            vec2 tex_coords = t_v0 * barycentrics.x + t_v1 * barycentrics.y + t_v2 * barycentrics.z;
+            emitted_light = texture(texture_samplers[nonuniformEXT(int(material_resource.emissive.w))], tex_coords).rgb * material_resource.emissive.rgb;
+        } else {
+            emitted_light = material_resource.emissive.rgb;
+        }
+        //emitted_light *= 250.f;
+        //emitted_light *= 10.f;
+        if (hit_value == vec3(0.f)) {
+            final_color += emitted_light * (1 - metallic);
+        } else {
+            final_color += emitted_light * hit_value * (1 - metallic);
+        }
+
+        // Compute reflection
+        vec3 incoming_direction = normalize(payload.current.ray_direction);
+        vec3 reflected_direction = reflect(incoming_direction, world_normal);
 
         vec3 tangent, bitangent;
-        createCoordinateSystem(world_normal, tangent, bitangent);
-        vec3 ray_direction = samplingHemisphereUniform(payload.current.seed, tangent, bitangent, world_normal);
-        payload.current.ray_direction = ray_direction;
+        createCoordinateSystem(normal, tangent, bitangent);
+
+        vec3 hemisphere_direction = samplingHemisphereUniform(payload.current.seed, tangent, bitangent, normal);
+        vec3 ray_direction = mix(reflected_direction, hemisphere_direction, roughness);
+        // Frensel-slick approximation
+        float cos_theta = clamp(dot(incoming_direction, normal), 0.0, 1.0);
+        vec3 F_0 = mix(vec3(0.04), albedo, metallic);
+        vec3 frensel = F_0 + (1.0 - F_0) * pow(1.0 - cos_theta, 5.0);
+
+        // Blend the reflection based on the frensel term and add it to the final color
+        vec3 reflection_contribution = frensel * payload.current.incoming_light;
+        final_color += reflection_contribution + (emitted_light * metallic);
+
+        payload.current.incoming_light = final_color;
+        payload.current.hit_value = hit_value;
+        payload.current.ray_origin = world_position;
+
+        // Update the payload with the reflect direction
+        payload.current.ray_direction = normalize(ray_direction);
     }
     payload.current.bounces += 1;
 }
