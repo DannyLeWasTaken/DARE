@@ -156,17 +156,15 @@ fn flatten_primitives(
 ) -> (Vec<structs::GltfPrimitive>, Vec<(usize, glam::Mat4)>) {
     let get_transformation =
         |translation: Option<[f32; 3]>, rotation: Option<[f32; 4]>, scale: Option<[f32; 3]>| {
-            glam::Mat4::from_scale(scale.map(glam::Vec3::from).unwrap_or(glam::Vec3::ONE))
-                * glam::Mat4::from_quat(
-                    rotation
-                        .map(glam::Quat::from_array)
-                        .unwrap_or(glam::Quat::IDENTITY),
-                )
-                * glam::Mat4::from_translation(
-                    translation
-                        .map(glam::Vec3::from)
-                        .unwrap_or(glam::Vec3::ZERO),
-                )
+            glam::Mat4::from_translation(
+                translation
+                    .map(glam::Vec3::from)
+                    .unwrap_or(glam::Vec3::ZERO),
+            ) * glam::Mat4::from_quat(
+                rotation
+                    .map(glam::Quat::from_array)
+                    .unwrap_or(glam::Quat::IDENTITY),
+            ) * glam::Mat4::from_scale(scale.map(glam::Vec3::from).unwrap_or(glam::Vec3::ONE))
         };
 
     //convert.y_axis.y *= -1f32;
