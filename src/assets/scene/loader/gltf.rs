@@ -927,19 +927,23 @@ fn load_materials_from_primitives(
         let get_texture = |index: usize| -> Option<Handle<assets::texture::Texture>> {
             scene.textures.get(index).cloned()
         };
-        let primitive_material =
-            match primitive.handle.as_ref().unwrap().material {
-                None => assets::material::Material {
-                    albedo_texture: None,
-                    albedo_color: glam::Vec3::new(75f32 / 255f32, 0f32, 130f32 / 255f32),
-                    normal_texture: None,
-                    emissive_texture: None,
-                    emissive_factor: glam::Vec3::ZERO,
-                },
-                Some(index) => {
-                    let gltf_material = &document.materials[index.value()];
-                    let pbr_material = &gltf_material.pbr_metallic_roughness;
-                    println!(
+        let primitive_material = match primitive.handle.as_ref().unwrap().material {
+            None => assets::material::Material {
+                albedo_texture: None,
+                albedo_color: glam::Vec3::new(75f32 / 255f32, 0f32, 130f32 / 255f32),
+                normal_texture: None,
+                emissive_texture: None,
+                emissive_factor: glam::Vec3::ZERO,
+                diffuse_factor: glam::Vec4::ONE,
+                diffuse_texture: None,
+                specular_factor: glam::Vec3::ONE,
+                glossiness_factor: 1f32,
+                specular_glosiness_texture: None,
+            },
+            Some(index) => {
+                let gltf_material = &document.materials[index.value()];
+                let pbr_material = &gltf_material.pbr_metallic_roughness;
+                println!(
                     "Primitive name: {:?}. Image name: {:?}. Albedo name: {:?}. Texture index: {}.",
                     primitive.name,
                     pbr_material.base_color_texture.as_ref().and_then(|x| {
@@ -956,51 +960,98 @@ fn load_materials_from_primitives(
                     }),
                     pbr_material.base_color_texture.as_ref().and_then(|x| {
                         get_texture(x.index.value()).and_then(|x| {
-                            scene.image_storage.get_immutable(
-                            &scene.texture_storage.get_immutable(&x).unwrap()
-                                .image).unwrap().name.clone()
+                            scene
+                                .image_storage
+                                .get_immutable(
+                                    &scene.texture_storage.get_immutable(&x).unwrap().image,
+                                )
+                                .unwrap()
+                                .name
+                                .clone()
                         })
                     }),
                     pbr_material
                         .base_color_texture
                         .as_ref()
-                        .map(|x| {
-                            x.index
-                            .value() as i32
-                        }).unwrap_or(-1),
+                        .map(|x| { x.index.value() as i32 })
+                        .unwrap_or(-1),
                 );
-                    if pbr_material.base_color_texture.is_some() {
-                        assert_eq!(
-                            pbr_material.base_color_texture.as_ref().unwrap().tex_coord,
-                            0
-                        );
-                    }
-                    println!(
-                        "Normal should be: {}",
-                        gltf_material
-                            .normal_texture
-                            .as_ref()
-                            .map(|x| x.index.value() as i32)
-                            .unwrap_or(-1)
+                if pbr_material.base_color_texture.is_some() {
+                    assert_eq!(
+                        pbr_material.base_color_texture.as_ref().unwrap().tex_coord,
+                        0
                     );
-                    assets::material::Material {
-                        albedo_texture: pbr_material
-                            .base_color_texture
-                            .as_ref()
-                            .and_then(|x| get_texture(x.index.value())),
-                        albedo_color: glam::Vec3::from_slice(&pbr_material.base_color_factor.0),
-                        normal_texture: gltf_material
-                            .normal_texture
-                            .as_ref()
-                            .and_then(|x| get_texture(x.index.value())),
-                        emissive_texture: gltf_material
-                            .emissive_texture
-                            .as_ref()
-                            .and_then(|x| get_texture(x.index.value())),
-                        emissive_factor: glam::Vec3::from_slice(&gltf_material.emissive_factor.0),
-                    }
                 }
-            };
+                println!(
+                    "Normal should be: {}",
+                    gltf_material
+                        .normal_texture
+                        .as_ref()
+                        .map(|x| x.index.value() as i32)
+                        .unwrap_or(-1)
+                );
+                assets::material::Material {
+                    albedo_texture: pbr_material
+                        .base_color_texture
+                        .as_ref()
+                        .and_then(|x| get_texture(x.index.value())),
+                    albedo_color: glam::Vec3::from_slice(&pbr_material.base_color_factor.0),
+                    normal_texture: gltf_material
+                        .normal_texture
+                        .as_ref()
+                        .and_then(|x| get_texture(x.index.value())),
+                    emissive_texture: gltf_material
+                        .emissive_texture
+                        .as_ref()
+                        .and_then(|x| get_texture(x.index.value())),
+                    emissive_factor: glam::Vec3::from_slice(&gltf_material.emissive_factor.0),
+                    diffuse_factor: gltf_material
+                        .extensions
+                        .as_ref()
+                        .map(|x| {
+                            x.pbr_specular_glossiness
+                                .as_ref()
+                                .map(|x| glam::Vec4::from_slice(&x.diffuse_factor.0))
+                                .unwrap_or(glam::Vec4::ONE)
+                        })
+                        .unwrap_or(glam::Vec4::ONE),
+                    diffuse_texture: gltf_material.extensions.as_ref().and_then(|x| {
+                        x.pbr_specular_glossiness.as_ref().and_then(|x| {
+                            x.diffuse_texture
+                                .as_ref()
+                                .and_then(|x| get_texture(x.index.value()))
+                        })
+                    }),
+                    specular_factor: gltf_material
+                        .extensions
+                        .as_ref()
+                        .map(|x| {
+                            x.pbr_specular_glossiness
+                                .as_ref()
+                                .map(|x| glam::Vec3::from_slice(&x.specular_factor.0))
+                                .unwrap_or(glam::Vec3::ONE)
+                        })
+                        .unwrap_or(glam::Vec3::ONE),
+                    glossiness_factor: gltf_material
+                        .extensions
+                        .as_ref()
+                        .map(|x| {
+                            x.pbr_specular_glossiness
+                                .as_ref()
+                                .map(|x| x.glossiness_factor.0)
+                                .unwrap_or(1f32)
+                        })
+                        .unwrap_or(1f32),
+                    specular_glosiness_texture: gltf_material.extensions.as_ref().and_then(|x| {
+                        x.pbr_specular_glossiness.as_ref().and_then(|x| {
+                            x.specular_glossiness_texture
+                                .as_ref()
+                                .and_then(|x| get_texture(x.index.value()))
+                        })
+                    }),
+                }
+            }
+        };
         materials.push(primitive_material);
         primitive.material = Some(materials.len() - 1);
     }

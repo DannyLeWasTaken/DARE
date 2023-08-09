@@ -103,16 +103,16 @@ impl app::App for Raytracing {
          */
         let scene = assets::scene::Scene::load(assets::scene::SceneLoadInfo::gltf {
             context: ctx.clone(),
-            //path: std::path::PathBuf::from(gltf_sample_name("Sponza")),
+            //path: std::path::PathBuf::from(gltf_sample_name("ABeautifulGame")),
             //path: std::path::PathBuf::from(gltf_sample_name("MetalRoughSpheres")),
-            //path: std::path::PathBuf::from(gltf_sample_name("Lantern")),
+            path: std::path::PathBuf::from(gltf_sample_name("Lantern")),
             //path: std::path::PathBuf::from(gltf_sample_name("BoomBoxWithAxes")),
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/deccer-cubes/SM_Deccer_Cubes_Textured.gltf",
             //),
             //path: std::path::PathBuf::from(gltf_sample_name("TextureCoordinateTest")),
             //path: std::path::PathBuf::from(gltf_sample_name("Sponza")),
-            path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/Bistro/bistro.glb"),
+            //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/Bistro/bistro.glb"),
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/minecraft_castle/scene.gltf",
             //),
@@ -124,6 +124,9 @@ impl app::App for Raytracing {
             //),
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/forest_demo/scene.gltf",
+            //),
+            //path: std::path::PathBuf::from(
+            //    "C:/Users/Danny/Documents/Assets/cornellBox/BJS-2.79-Cycles-gltf/assets/cornellBox-2.79-Cycles-gltf.gltf",
             //),
         })
         .unwrap();
@@ -254,7 +257,7 @@ impl app::App for Raytracing {
                 let mut object_description_sratch_buffer = ifc
                     .allocate_scratch_buffer(
                         (self.acceleration_structure.addresses.len()
-                            * std::mem::size_of::<assets::CMesh>())
+                            * std::mem::size_of::<assets::mesh::CMesh>())
                             as vk::DeviceSize,
                     )
                     .expect("Unable to allocate mesh scratch buffer"); // lmao

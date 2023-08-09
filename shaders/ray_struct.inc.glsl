@@ -26,6 +26,23 @@ struct MaterialDescription {
     vec4 albedo;
     vec4 normal; // x,y,z unused. w is texture index
     vec4 emissive;
+    vec4 diffuse_factor;
+    vec4 specular_glossiness_factor; // rgb -> specular, a -> specular
+    vec4 specular_glossiness_diffuse_texture; // r -> specular glossiness texture, b -> diffuse texture
+};
+
+/// Represents the values of a material description
+struct MaterialValues {
+    vec3 albedo;
+    vec3 normal;
+    vec3 emissive;
+    vec4 diffuse;
+    vec3 specular;
+    float glossiness;
+};
+
+void get_material_values(uint64_t tex_coords, MaterialDescription material) {
+
 };
 
 /// Describes the object's bda buffers and materials

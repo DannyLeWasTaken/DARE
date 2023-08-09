@@ -7,9 +7,17 @@ use crate::utils::handle_storage::Handle;
 pub struct Material {
     pub albedo_texture: Option<Handle<assets::texture::Texture>>,
     pub albedo_color: glam::Vec3,
+
     pub normal_texture: Option<Handle<assets::texture::Texture>>,
+
     pub emissive_texture: Option<Handle<assets::texture::Texture>>,
     pub emissive_factor: glam::Vec3,
+
+    pub diffuse_factor: glam::Vec4,
+    pub diffuse_texture: Option<Handle<assets::texture::Texture>>,
+    pub specular_factor: glam::Vec3,
+    pub glossiness_factor: f32,
+    pub specular_glosiness_texture: Option<Handle<assets::texture::Texture>>,
 }
 
 impl Eq for Material {}
@@ -36,19 +44,30 @@ impl Material {
                 })
                 .unwrap_or(-1i32)
         };
-        let merge = |value: Option<glam::Vec3>, index: i32| -> [f32; 4] {
+        let merge = |value: Option<glam::Vec3>, index: f32| -> [f32; 4] {
             let mut vec4 = [0.0; 4];
             vec4[0..3].copy_from_slice(&value.map(|x| x.to_array()).unwrap_or([0f32, 0f32, 0f32]));
-            vec4[3] = index as f32;
+            vec4[3] = index;
             vec4
         };
         let material = CMaterial {
-            albedo: merge(Some(self.albedo_color), get_index(&self.albedo_texture)),
-            normal: merge(None, get_index(&self.normal_texture)),
+            albedo: merge(
+                Some(self.albedo_color),
+                get_index(&self.albedo_texture) as f32,
+            ),
+            normal: merge(None, get_index(&self.normal_texture) as f32),
             emissive: merge(
                 Some(self.emissive_factor),
-                get_index(&self.emissive_texture),
+                get_index(&self.emissive_texture) as f32,
             ),
+            diffuse_factor: self.diffuse_factor.to_array(),
+            specular_glossiness_factor: merge(Some(self.specular_factor), self.glossiness_factor),
+            specular_glossiness_diffuse_texture: [
+                get_index(&self.specular_glosiness_texture) as f32,
+                get_index(&self.diffuse_texture) as f32,
+                0f32,
+                0f32,
+            ],
         };
         //println!("I think normal is: {}", material.normal[3]);
         material
@@ -62,6 +81,9 @@ pub struct CMaterial {
     pub albedo: [f32; 4],
     pub normal: [f32; 4],
     pub emissive: [f32; 4],
+    pub diffuse_factor: [f32; 4],
+    pub specular_glossiness_factor: [f32; 4], // rgb -> specular factor, a -> glossiness factor
+    pub specular_glossiness_diffuse_texture: [f32; 4], // r channel is only used sadly :(
 }
 // Ensure that CMaterial is compatible with bytemuck
 unsafe impl bytemuck::Pod for CMaterial {}
