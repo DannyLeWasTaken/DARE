@@ -1,39 +1,7 @@
 use anyhow::Result;
+use phobos::prelude::vk;
 use phobos::prelude::*;
-
-pub fn staged_buffer_upload<T: Copy>(
-    mut ctx: Context,
-    data: &[T],
-    usage: phobos::vk::BufferUsageFlags,
-) -> Result<phobos::Buffer> {
-    let staging = phobos::Buffer::new(
-        ctx.device.clone(),
-        &mut ctx.allocator,
-        data.len() as u64 * std::mem::size_of::<T>() as u64,
-        phobos::vk::BufferUsageFlags::TRANSFER_SRC,
-        phobos::MemoryType::CpuToGpu,
-    )?;
-
-    let mut staging_view = staging.view_full();
-    staging_view.mapped_slice()?.copy_from_slice(data);
-
-    let buffer = phobos::Buffer::new_device_local(
-        ctx.device,
-        &mut ctx.allocator,
-        staging.size(),
-        phobos::vk::BufferUsageFlags::TRANSFER_DST | usage,
-    )?;
-    let view = buffer.view_full();
-
-    let cmd = ctx
-        .execution_manager
-        .on_domain::<phobos::domain::Transfer>()?
-        .copy_buffer(&staging_view, &view)?
-        .finish()?;
-
-    ctx.execution_manager.submit(cmd)?.wait()?;
-    Ok(buffer)
-}
+use std::ptr;
 
 #[derive(Debug)]
 pub struct WindowContext {
@@ -113,16 +81,22 @@ impl Runner {
     ) -> Result<Self> {
         std::env::set_var("RUST_LOG", "trace");
         pretty_env_logger::init();
+        let shader_clock_feature = vk::PhysicalDeviceShaderClockFeaturesKHR {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR,
+            p_next: ptr::null_mut(),
+            shader_subgroup_clock: vk::TRUE,
+            shader_device_clock: vk::TRUE,
+        };
         let mut settings = phobos::AppBuilder::new()
             .version((1, 0, 0))
             .name(name)
             .validation(true)
-            .present_mode(phobos::vk::PresentModeKHR::MAILBOX)
-            .scratch_size(1 * 1024u64)
+            .present_mode(vk::PresentModeKHR::MAILBOX)
+            .scratch_chunk_size(1 * 1024u64)
             .gpu(phobos::GPURequirements {
                 dedicated: false,
-                min_video_memory: 1 * 1024 * 1024 * 1024, // 1 GiB
-                min_dedicated_video_memory: 1 * 1024 * 1024 * 1024,
+                min_video_memory: 4 * 1024 * 1024 * 1024, // 1 GiB
+                min_dedicated_video_memory: 4 * 1024 * 1024 * 1024,
                 queues: vec![
                     phobos::QueueRequest {
                         dedicated: false,
@@ -136,6 +110,13 @@ impl Runner {
                         dedicated: true,
                         queue_type: phobos::QueueType::Compute,
                     },
+                ],
+                features: vk::PhysicalDeviceFeatures::builder()
+                    .shader_int64(true)
+                    .build(),
+                device_extensions: vec![
+                    String::from("VK_EXT_scalar_block_layout"),
+                    String::from("VK_KHR_shader_clock"),
                 ],
                 ..Default::default()
             });
