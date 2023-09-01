@@ -34,6 +34,7 @@ void main() {
     const vec2 pixel_center = vec2(gl_LaunchIDEXT.xy) + pixel_jitter;
     const vec2 in_uv = pixel_center / vec2(gl_LaunchSizeEXT.xy);
     vec2 normalized_uv = in_uv * 2.0 - 1.0;
+    payload.current.uv = in_uv;
 
     // Apply inverse of view and projection to find camera direction
     // This gives us the origin and direction of the ray
@@ -49,7 +50,12 @@ void main() {
     const float min_dist = 0.001;
     const float max_dist = 10000.0;
 
-    while (!payload.current.missed && payload.current.depth <= 10 && payload.current.bounces <= 4) {
+    mat4 invView = inverse(pc.view);
+    vec3 cam_pos = vec3(invView[3]); // Extract translation component
+    payload.camera_position = cam_pos;
+    payload.original_ray_origin = origin.xyz;
+
+    while (!payload.current.missed && payload.current.depth <= 10 && payload.current.bounces <= 5) {
         // Do the actual ray tracing
         traceRayEXT(
             tlas,                   // Top-level acceleration structure
@@ -67,24 +73,9 @@ void main() {
         payload.previous = payload.current;
         payload.current.depth += 1;
     }
-    payload.current = payload.current.missed ? payload.previous : payload.current;
-    payload.current.missed = true;
-    traceRayEXT(
-        tlas, // Top-level acceleration structure
-        ray_flags, // Ray flags
-        0xFF, // Cull mask
-        0, // sbtRecordOffset
-        0, // sbtRecordStride
-        0, // Index of the miss shader to use
-        payload.current.ray_origin, // Ray origin
-        min_dist, // Minimum ray range
-        normalize(vec3(0.25, 0.75, 0.25) + (vec3(rnd(payload.current.seed), rnd(payload.current.seed), rnd(payload.current.seed)) / 10)), // Ray direction
-        max_dist, // Maximum ray range
-        0                       // Location of the ray payload
-    );
     if (pc.frame_id > 1) {
         vec3 old_color = imageLoad(old_image, ivec2(gl_LaunchIDEXT.xy)).rgb;
-        // Caulcate contribution
+        // Calculate contribution
         float a = 1.0f / float(pc.frame_id);
         // Mix the old and new colors together
         vec3 final_color = mix(old_color, payload.current.incoming_light, a);

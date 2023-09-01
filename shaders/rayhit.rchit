@@ -10,6 +10,7 @@
 
 #include "ray_struct.inc.glsl"
 #include "sampler.inc.glsl"
+#include "lighting.inc.glsl"
 
 hitAttributeEXT vec2 attribs;
 
@@ -36,6 +37,8 @@ dvec3 hsv_to_rgb(in dvec3 hsv) {
 }
 
 const float M_GOLDEN_CONJ = 0.6180339887498948482045868343656381177203091798057628621354486227;
+const float EPSILON = 1e-4;
+#define M_PI 3.14159265
 
 void main() {
     //ObjectDescriptionArray   object_descriptions = ObjectDescriptionArray(DescriptionAddressesArray.i[0].object);
@@ -60,13 +63,14 @@ void main() {
         vec3 v1 = vertices.v[ind.y];
         vec3 v2 = vertices.v[ind.z];
         const vec3 position = v0 * barycentrics.x + v1 * barycentrics.y + v2 * barycentrics.z;
-        //const vec3 world_position = vec3(gl_ObjectToWorldEXT * vec4(position, 1.0));  // Transforming the position to world space
-        const vec3 world_position = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
+        const vec3 world_position = vec3(gl_ObjectToWorldEXT * vec4(position, 1.0));  // Transforming the position to world space
+        //const vec3 world_position = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
 
         // Normal
         vec3 normal;
         vec3 world_normal;
-        const vec3 geometry_normal = normalize(cross(v0 - v1, v2 - v0));
+        vec3 geometry_normal = normalize(cross(v0 - v1, v2 - v0));
+        vec3 world_geometry_normal = normalize(vec3(geometry_normal * gl_WorldToObjectEXT));
         if (object_resource.tex_buffer > 0 && material_resource.normal.w > -1) {
             // Tex coords of the triangle
             vec2 t_v0 = tex_coords.v[ind.x];
@@ -84,13 +88,19 @@ void main() {
         }
         world_normal = normalize(vec3(normal * gl_WorldToObjectEXT));
 
+        // Back-face processing
+        if (dot(gl_WorldRayDirectionEXT, -world_geometry_normal) > 0.0) {
+            world_normal = -world_normal;
+            normal = -normal;
+            geometry_normal = -geometry_normal;
+            world_geometry_normal = -world_geometry_normal;
+        }
 
-
-        //const sampler2D image = texture_samplers[nonuniformEXT(0)];
-        //payload.hit_value = vec3(0);
         vec3 final_color = payload.current.incoming_light;
         vec3 hit_value = payload.current.hit_value;
         vec3 albedo = vec3(1.0);
+
+        // Albedo
         if (material_resource.albedo.w > -1 && object_resource.tex_buffer > 0 ) {
             // Tex coords of the triangle
             vec2 t_v0 = tex_coords.v[ind.x];
@@ -102,8 +112,8 @@ void main() {
         } else {
             albedo = material_resource.albedo.rgb;
         }
-        hit_value *= albedo;
 
+        // Specular-glossiness
         vec3 specular = vec3(1.0);
         float glossiness = 1.0;
         if (material_resource.specular_glossiness_factor.r > -1) {
@@ -119,7 +129,8 @@ void main() {
             specular = material_resource.specular_glossiness_factor.rgb;
             glossiness = material_resource.specular_glossiness_factor.a;
         }
-
+        
+        // Metallic-roughness
         float metallic; // b-channel
         float roughness; // g-channel
         if (material_resource.metallic_roughness.r > -1) {
@@ -136,7 +147,9 @@ void main() {
             metallic = material_resource.metallic_roughness.b;
         }
 
+        // Emissiveness
         vec3 emitted_light = vec3(0.0);
+        hit_value *= albedo;
         if (material_resource.emissive.w > -1 && object_resource.tex_buffer > 0) {
             vec2 t_v0 = tex_coords.v[ind.x];
             vec2 t_v1 = tex_coords.v[ind.y];
@@ -146,31 +159,30 @@ void main() {
         } else {
             emitted_light = material_resource.emissive.rgb;
         }
-        //emitted_light *= 250.f;
-        //emitted_light *= 10.f;
-        if (hit_value == vec3(0.f)) {
-            final_color += emitted_light * (1 - metallic);
-        } else {
-            final_color += emitted_light * hit_value * (1 - metallic);
-        }
+        emitted_light *= 20.f;
 
         // Compute reflection
         vec3 incoming_direction = normalize(payload.current.ray_direction);
         vec3 reflected_direction = reflect(incoming_direction, world_normal);
 
         vec3 tangent, bitangent;
-        createCoordinateSystem(normal, tangent, bitangent);
+        createCoordinateSystem(world_normal, tangent, bitangent);
 
-        vec3 hemisphere_direction = samplingHemisphereUniform(payload.current.seed, tangent, bitangent, normal);
+        vec3 hemisphere_direction = samplingHemisphereUniform(
+            payload.current.seed,
+            tangent,
+            bitangent,
+            world_normal
+        );
         vec3 ray_direction = mix(reflected_direction, hemisphere_direction, roughness);
         // Frensel-slick approximation
-        float cos_theta = clamp(dot(incoming_direction, normal), 0.0, 1.0);
+        float cos_theta = clamp(dot(incoming_direction, world_normal), 0.0, 1.0);
         vec3 F_0 = mix(vec3(0.04), albedo, metallic);
         vec3 frensel = F_0 + (1.0 - F_0) * pow(1.0 - cos_theta, 5.0);
 
         // Blend the reflection based on the frensel term and add it to the final color
         vec3 reflection_contribution = frensel * payload.current.incoming_light;
-        final_color += reflection_contribution + (emitted_light * metallic);
+        final_color += (emitted_light == vec3(0.f) ? hit_value : (albedo == vec3(0.f) ? (hit_value/albedo) : hit_value)) * (reflection_contribution + (emitted_light * metallic));
 
         payload.current.incoming_light = final_color;
         payload.current.hit_value = hit_value;

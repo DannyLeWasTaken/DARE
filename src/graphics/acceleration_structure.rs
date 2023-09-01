@@ -676,8 +676,7 @@ fn get_tlas_build_infos<'a>(
                 .set_type(phobos::AccelerationStructureType::TopLevel)
                 .push_instances(phobos::AccelerationStructureGeometryInstancesData {
                     data: instance_buffer.address().into(),
-                    flags: vk::GeometryFlagsKHR::OPAQUE
-                        | vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION,
+                    flags: vk::GeometryFlagsKHR::OPAQUE,
                 })
                 .push_range(*instance_count, 0, 0, 0),
             size_info: None,

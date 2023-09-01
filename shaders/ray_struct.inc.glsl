@@ -16,6 +16,9 @@ struct Ray {
 struct Payload {
     Ray current;
     Ray previous;
+
+    vec3 camera_position;
+    vec3 original_ray_origin;
 };
 
 /// Describes the material properties of the object

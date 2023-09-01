@@ -16,6 +16,34 @@ vec3 samplingHemisphere(inout uint seed, in vec3 x, in vec3 y, in vec3 z)
     return direction;
 }
 
+vec3 random_point_on_unit_sphere(inout uint seed) {
+    #define M_PI 3.14159265
+    float u = rnd(seed);
+    float v = rnd(seed);
+    float theta = 2.0 * M_PI * u; // azimuthal angle [0, 2π]
+    float phi = acos(2.0 * v - 1.0);       // polar angle [0, π]
+
+    vec3 point;
+    point.x = sin(phi) * cos(theta);
+    point.y = sin(phi) * sin(theta);
+    point.z = cos(phi);
+
+    return point;
+}
+
+vec3 random_hemisphere_on_normal(inout uint seed, vec3 normal) {
+    vec3 on_unit_sphere = random_point_on_unit_sphere(seed);
+    if (dot(on_unit_sphere, normal) > 0.0) {
+        return on_unit_sphere;
+    } else {
+        return -on_unit_sphere;
+    }
+}
+
+vec3 random_unit_vector(inout uint seed) {
+    return vec3(rnd(seed), rnd(seed), rnd(seed));
+}
+
 vec3 samplingHemisphereUniform(inout uint seed, in vec3 x, in vec3 y, in vec3 z)
 {
     #define M_PI 3.14159265
