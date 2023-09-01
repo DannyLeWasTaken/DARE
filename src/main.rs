@@ -112,7 +112,7 @@ impl app::App for Raytracing {
             //),
             //path: std::path::PathBuf::from(gltf_sample_name("TextureCoordinateTest")),
             //path: std::path::PathBuf::from(gltf_sample_name("OrientationTest")),
-            path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/Bistro/bistro.glb"),
+            //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/Bistro/bistro.glb"),
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/minecraft_castle/scene.gltf",
             //),
@@ -128,9 +128,9 @@ impl app::App for Raytracing {
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/cornellBox/BJS-2.79-Cycles-gltf/assets/cornellBox-2.79-Cycles-gltf.gltf",
             //),
-            //path: std::path::PathBuf::from(
-            //    "C:/Users/Danny/Documents/Assets/cornellBox/BJS-2.80-Eevee-gltf/assets/cornellBox-2.80-Eevee-gltf.gltf"
-            //),
+            path: std::path::PathBuf::from(
+                "C:/Users/Danny/Documents/Assets/cornellBox/BJS-2.80-Eevee-gltf/assets/cornellBox-2.80-Eevee-gltf.gltf"
+            ),
             //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/small_city.glb"),
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/Classroom/classroom.glb",
