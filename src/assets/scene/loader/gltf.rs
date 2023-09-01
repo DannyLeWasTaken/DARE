@@ -1208,7 +1208,8 @@ fn get_accessors_contents(
     document: &gltf::json::Root,
     buffers: &[Vec<u8>],
 ) -> Vec<u8> {
-    let total_byte_offset = (accessor.byte_offset + buffer_view.byte_offset.unwrap_or(0)) as usize;
+    let total_byte_offset =
+        (accessor.byte_offset.unwrap_or(0) + buffer_view.byte_offset.unwrap_or(0)) as usize;
     let entry_size =
         accessor.component_type.unwrap().0.size() * accessor.type_.unwrap().multiplicity();
     let view_stride = buffer_view
