@@ -17,7 +17,11 @@ pub struct Material {
     pub diffuse_texture: Option<Handle<assets::texture::Texture>>,
     pub specular_factor: glam::Vec3,
     pub glossiness_factor: f32,
-    pub specular_glosiness_texture: Option<Handle<assets::texture::Texture>>,
+    pub specular_glossiness_texture: Option<Handle<assets::texture::Texture>>,
+
+    pub metallic_factor: f32,
+    pub roughness_factor: f32,
+    pub metallic_roughness_texture: Option<Handle<assets::texture::Texture>>,
 }
 
 impl Eq for Material {}
@@ -63,13 +67,18 @@ impl Material {
             diffuse_factor: self.diffuse_factor.to_array(),
             specular_glossiness_factor: merge(Some(self.specular_factor), self.glossiness_factor),
             specular_glossiness_diffuse_texture: [
-                get_index(&self.specular_glosiness_texture) as f32,
+                get_index(&self.specular_glossiness_texture) as f32,
                 get_index(&self.diffuse_texture) as f32,
                 0f32,
                 0f32,
             ],
+            metallic_roughness: [
+                get_index(&self.metallic_roughness_texture) as f32,
+                self.roughness_factor,
+                self.metallic_factor,
+                0f32,
+            ],
         };
-        //println!("I think normal is: {}", material.normal[3]);
         material
     }
 }
@@ -84,6 +93,7 @@ pub struct CMaterial {
     pub diffuse_factor: [f32; 4],
     pub specular_glossiness_factor: [f32; 4], // rgb -> specular factor, a -> glossiness factor
     pub specular_glossiness_diffuse_texture: [f32; 4], // r channel is only used sadly :(
+    pub metallic_roughness: [f32; 4],         // r -> texture, g -> roughness. b -> metallic
 }
 // Ensure that CMaterial is compatible with bytemuck
 unsafe impl bytemuck::Pod for CMaterial {}

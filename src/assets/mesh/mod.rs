@@ -26,6 +26,7 @@ pub struct CMesh {
     pub vertex_buffer: u64,
     pub index_buffer: u64,
     pub normal_buffer: u64,
+    pub tangent_buffer: u64,
     pub tex_buffer: u64,
     pub material: i32,
 }
@@ -49,6 +50,12 @@ impl Mesh {
                 .unwrap_or(0u64),
             normal_buffer: self
                 .normal_buffer
+                .clone()
+                .and_then(|buffer| scene.attributes_storage.get_immutable(&buffer))
+                .map(|x| x.buffer_view.address())
+                .unwrap_or(0u64),
+            tangent_buffer: self
+                .tangent_buffer
                 .clone()
                 .and_then(|buffer| scene.attributes_storage.get_immutable(&buffer))
                 .map(|x| x.buffer_view.address())

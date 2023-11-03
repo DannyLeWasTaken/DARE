@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.71"
 futures = "0.3.28"
-phobos = { git = "https://github.com/NotAPenguin0/phobos-rs", rev = "a775036" }
+phobos = { git = "https://github.com/NotAPenguin0/phobos-rs", rev = "2a1e539" }
 winit = "0.28.6"
 pretty_env_logger = "0.5.0"
 gltf = { version = "1.2.0", features = ["import", "names", "KHR_materials_pbrSpecularGlossiness"] }
@@ -21,6 +21,7 @@ base64 = "0.21.2"
 rayon = "1.7.0"
 num-traits = "0.2.16"
 image = "0.24.6"
+percent-encoding = "2.3.0"
 
 [build-dependencies]
 shaderc = { version = "0.8.2", optional = true, features = ["build-from-source"] }

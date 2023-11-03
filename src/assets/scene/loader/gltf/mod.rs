@@ -4,12 +4,16 @@ use crate::utils::memory;
 use crate::{app, assets};
 use anyhow::Result;
 use ash::vk;
+use base64;
 use gltf;
+use gltf::json::accessor::ComponentType;
 use image::EncodableLayout;
 use phobos::{buffer, IncompleteCmdBuffer, TransferCmdBuffer};
+use rayon::join;
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::Hash;
 use std::sync::{Arc, RwLock};
 use std::{fs, io, path, ptr};
 
@@ -106,11 +110,45 @@ fn load_image_data(
                     image::load_from_memory_with_format(data, format).unwrap();
                 image
             } else if let Some(uri) = gltf_image.uri.as_ref() {
-                // Load image from texture
-                let path = path::Path::new(uri.as_str());
-                let image: image::DynamicImage =
-                    image::open(gltf_path.parent().unwrap().join(path)).unwrap();
-                image
+                if uri.contains("base64") {
+                    // Extract the image format and base64 data
+                    if let Some(comma_pos) = uri.find(',') {
+                        let meta_data = &uri["data:image/".len()..comma_pos];
+                        let (image_format, _) =
+                            meta_data.split_at(meta_data.find(';').unwrap_or(meta_data.len()));
+                        let image_format: image::ImageFormat = match image_format {
+                            "png" => image::ImageFormat::Png,
+                            "jpeg" => image::ImageFormat::Jpeg,
+                            _ => panic!("Unsupported image type found"),
+                        };
+
+                        let base64_data = &uri[comma_pos + 1..];
+
+                        // Decode the base64 data
+                        let decoded_data =
+                            base64::decode(base64_data).expect("Failed to decode base64 data");
+
+                        // Load the image from the decoded data
+                        let image =
+                            image::load_from_memory_with_format(&decoded_data, image_format)
+                                .unwrap_or_else(|_| {
+                                    panic!("Failed to load image from base64: {}", uri)
+                                });
+
+                        image
+                    } else {
+                        panic!("Malformed data URI");
+                    }
+                } else {
+                    // Load image from texture
+                    let decoded_uri = percent_encoding::percent_decode_str(uri.as_str())
+                        .decode_utf8_lossy()
+                        .into_owned();
+                    let relative_path = gltf_path.parent().unwrap().join(decoded_uri);
+                    let image: image::DynamicImage = image::open(relative_path)
+                        .unwrap_or_else(|_| panic!("Failed to open: {}", uri));
+                    image
+                }
             } else {
                 panic!("Unable to load file properly");
             }
@@ -156,17 +194,15 @@ fn flatten_primitives(
 ) -> (Vec<structs::GltfPrimitive>, Vec<(usize, glam::Mat4)>) {
     let get_transformation =
         |translation: Option<[f32; 3]>, rotation: Option<[f32; 4]>, scale: Option<[f32; 3]>| {
-            glam::Mat4::from_scale(scale.map(glam::Vec3::from).unwrap_or(glam::Vec3::ONE))
-                * glam::Mat4::from_quat(
-                    rotation
-                        .map(glam::Quat::from_array)
-                        .unwrap_or(glam::Quat::IDENTITY),
-                )
-                * glam::Mat4::from_translation(
-                    translation
-                        .map(glam::Vec3::from)
-                        .unwrap_or(glam::Vec3::ZERO),
-                )
+            glam::Mat4::from_translation(
+                translation
+                    .map(glam::Vec3::from)
+                    .unwrap_or(glam::Vec3::ZERO),
+            ) * glam::Mat4::from_quat(
+                rotation
+                    .map(glam::Quat::from_array)
+                    .unwrap_or(glam::Quat::IDENTITY),
+            ) * glam::Mat4::from_scale(scale.map(glam::Vec3::from).unwrap_or(glam::Vec3::ONE))
         };
 
     //convert.y_axis.y *= -1f32;
@@ -377,7 +413,7 @@ fn convert_dimensions<T: bytemuck::Zeroable + bytemuck::Pod + Sync + Send>(
 
 #[cfg(test)]
 mod tests {
-    use crate::assets::scene::loader::gltf::*;
+    use crate::assets::scene::loader::r#mod::*;
     use bytemuck;
 
     #[test]
@@ -424,11 +460,35 @@ fn get_accessors_from_primitives(
     document: &gltf::json::Root,
     buffers: &[Vec<u8>],
 ) -> (Vec<assets::buffer_view::AttributeView<u8>>, phobos::Buffer) {
+    use gltf::json::accessor::{ComponentType, Type};
+    use gltf::Semantic;
     // COLLECT ALL ACCESSORS' CONTENTS INTO MONOLITHIC BUFFER
     let mut monolithic_buffer: Vec<u8> = Vec::new();
 
     // TODO: Primitives can reference the same accessor with our current method,
     // we may end up with duplicates as accessors may refer to the same data
+    let mut processed_accessors: HashMap<(usize, u32, u32), usize> = HashMap::new();
+    let get_component_type_index = |component_type: ComponentType| -> u32 {
+        return match component_type {
+            ComponentType::I8 => 0,
+            ComponentType::U8 => 1,
+            ComponentType::I16 => 2,
+            ComponentType::U16 => 3,
+            ComponentType::U32 => 4,
+            ComponentType::F32 => 5,
+        };
+    };
+    let get_dimension_index = |dimension: Type| -> u32 {
+        return match dimension {
+            Type::Scalar => 0,
+            Type::Vec2 => 1,
+            Type::Vec3 => 2,
+            Type::Vec4 => 3,
+            Type::Mat2 => 4,
+            Type::Mat3 => 5,
+            Type::Mat4 => 6,
+        };
+    };
 
     let mut accessor_struct_views: Vec<structs::Accessor> = Vec::new();
     for primitive in primitives.iter_mut() {
@@ -436,8 +496,6 @@ fn get_accessors_from_primitives(
         let mut process_accessor = |accessor_index: usize, semantic: &structs::AccessorSemantic| {
             let accessor = &document.accessors[accessor_index];
             let view = &document.buffer_views[accessor.buffer_view.unwrap().value()];
-            use gltf::json::accessor::{ComponentType, Type};
-            use gltf::Semantic;
             // Do type conversions
             // Create the desired dimension + type
             // Convert dimensions first
@@ -464,196 +522,212 @@ fn get_accessors_from_primitives(
                 structs::AccessorSemantic::Index => Type::Scalar,
             };
 
-            // Get accessors contents
-            let accessor_contents = get_accessors_contents(accessor, view, document, buffers);
-            // Convert accessor dimensions first
-            let accessor_contents = match accessor.component_type.unwrap().0 {
-                ComponentType::I8 => convert_dimensions::<i8>(
-                    accessor.type_.unwrap().multiplicity(),
-                    target_dimension.multiplicity(),
-                    accessor_contents.as_slice(),
-                ),
-                ComponentType::U8 => convert_dimensions::<u8>(
-                    accessor.type_.unwrap().multiplicity(),
-                    target_dimension.multiplicity(),
-                    accessor_contents.as_slice(),
-                ),
-                ComponentType::I16 => convert_dimensions::<i16>(
-                    accessor.type_.unwrap().multiplicity(),
-                    target_dimension.multiplicity(),
-                    accessor_contents.as_slice(),
-                ),
-                ComponentType::U16 => convert_dimensions::<u16>(
-                    accessor.type_.unwrap().multiplicity(),
-                    target_dimension.multiplicity(),
-                    accessor_contents.as_slice(),
-                ),
-                ComponentType::U32 => convert_dimensions::<u32>(
-                    accessor.type_.unwrap().multiplicity(),
-                    target_dimension.multiplicity(),
-                    accessor_contents.as_slice(),
-                ),
-                ComponentType::F32 => convert_dimensions::<f32>(
-                    accessor.type_.unwrap().multiplicity(),
-                    target_dimension.multiplicity(),
-                    accessor_contents.as_slice(),
-                ),
-            };
-            // Now convert types (i hate this code)
-            let mut accessor_contents =
-                match (accessor.component_type.unwrap().0, target_component_type) {
-                    // Same types
-                    (ComponentType::I8, ComponentType::I8) => accessor_contents,
-                    (ComponentType::U8, ComponentType::U8) => accessor_contents,
-                    (ComponentType::I16, ComponentType::I16) => accessor_contents,
-                    (ComponentType::U16, ComponentType::U16) => accessor_contents,
-                    (ComponentType::U32, ComponentType::U32) => accessor_contents,
-                    (ComponentType::F32, ComponentType::F32) => accessor_contents,
-                    // i8 -> *
-                    (ComponentType::I8, ComponentType::U8) => {
-                        cast_bytes_slice_type::<i8, u8>(&accessor_contents)
-                    }
-                    (ComponentType::I8, ComponentType::I16) => {
-                        cast_bytes_slice_type::<i8, i16>(&accessor_contents)
-                    }
-                    (ComponentType::I8, ComponentType::U16) => {
-                        cast_bytes_slice_type::<i8, u16>(&accessor_contents)
-                    }
-                    (ComponentType::I8, ComponentType::U32) => {
-                        cast_bytes_slice_type::<i8, u32>(&accessor_contents)
-                    }
-                    (ComponentType::I8, ComponentType::F32) => {
-                        cast_bytes_slice_type::<i8, f32>(&accessor_contents)
-                    }
-                    // u8 -> *
-                    (ComponentType::U8, ComponentType::I8) => {
-                        cast_bytes_slice_type::<u8, i8>(&accessor_contents)
-                    }
-                    (ComponentType::U8, ComponentType::I16) => {
-                        cast_bytes_slice_type::<u8, i16>(&accessor_contents)
-                    }
-                    (ComponentType::U8, ComponentType::U16) => {
-                        cast_bytes_slice_type::<u8, u16>(&accessor_contents)
-                    }
-                    (ComponentType::U8, ComponentType::U32) => {
-                        cast_bytes_slice_type::<u8, u32>(&accessor_contents)
-                    }
-                    (ComponentType::U8, ComponentType::F32) => {
-                        cast_bytes_slice_type::<u8, f32>(&accessor_contents)
-                    }
-                    // i16 -> *
-                    (ComponentType::I16, ComponentType::I8) => {
-                        cast_bytes_slice_type::<i16, i8>(&accessor_contents)
-                    }
-                    (ComponentType::I16, ComponentType::U8) => {
-                        cast_bytes_slice_type::<i16, u8>(&accessor_contents)
-                    }
-                    (ComponentType::I16, ComponentType::U16) => {
-                        cast_bytes_slice_type::<i16, u16>(&accessor_contents)
-                    }
-                    (ComponentType::I16, ComponentType::U32) => {
-                        cast_bytes_slice_type::<i16, u32>(&accessor_contents)
-                    }
-                    (ComponentType::I16, ComponentType::F32) => {
-                        cast_bytes_slice_type::<i16, f32>(&accessor_contents)
-                    }
-                    // u16 -> *
-                    (ComponentType::U16, ComponentType::I8) => {
-                        cast_bytes_slice_type::<u16, i8>(&accessor_contents)
-                    }
-                    (ComponentType::U16, ComponentType::U8) => {
-                        cast_bytes_slice_type::<u16, u8>(&accessor_contents)
-                    }
-                    (ComponentType::U16, ComponentType::I16) => {
-                        cast_bytes_slice_type::<u16, i16>(&accessor_contents)
-                    }
-                    (ComponentType::U16, ComponentType::U32) => {
-                        cast_bytes_slice_type::<u16, u32>(&accessor_contents)
-                    }
-                    (ComponentType::U16, ComponentType::F32) => {
-                        cast_bytes_slice_type::<u16, f32>(&accessor_contents)
-                    }
-                    // u32 -> *
-                    (ComponentType::U32, ComponentType::I8) => {
-                        cast_bytes_slice_type::<u32, i8>(&accessor_contents)
-                    }
-                    (ComponentType::U32, ComponentType::U8) => {
-                        cast_bytes_slice_type::<u32, u8>(&accessor_contents)
-                    }
-                    (ComponentType::U32, ComponentType::I16) => {
-                        cast_bytes_slice_type::<u32, i16>(&accessor_contents)
-                    }
-                    (ComponentType::U32, ComponentType::U16) => {
-                        cast_bytes_slice_type::<u32, u16>(&accessor_contents)
-                    }
-                    (ComponentType::U32, ComponentType::F32) => {
-                        cast_bytes_slice_type::<u32, f32>(&accessor_contents)
-                    }
-                    // f32 -> *
-                    (ComponentType::F32, ComponentType::I8) => {
-                        cast_bytes_slice_type::<f32, i8>(&accessor_contents)
-                    }
-                    (ComponentType::F32, ComponentType::U8) => {
-                        cast_bytes_slice_type::<f32, u8>(&accessor_contents)
-                    }
-                    (ComponentType::F32, ComponentType::I16) => {
-                        cast_bytes_slice_type::<f32, i16>(&accessor_contents)
-                    }
-                    (ComponentType::F32, ComponentType::U16) => {
-                        cast_bytes_slice_type::<f32, u16>(&accessor_contents)
-                    }
-                    (ComponentType::F32, ComponentType::U32) => {
-                        cast_bytes_slice_type::<f32, u32>(&accessor_contents)
-                    }
-                    (_, _) => {
-                        panic!("Unsupported component type conversion!");
-                    }
+            if let Some(accessor) = processed_accessors.get(&(
+                accessor_index,
+                get_component_type_index(target_component_type),
+                get_dimension_index(target_dimension),
+            )) {
+                primitive.accessors.insert(semantic.clone(), *accessor);
+            } else {
+                // Get accessors contents
+                let accessor_contents = get_accessors_contents(accessor, view, document, buffers);
+                // Convert accessor dimensions first
+                let accessor_contents = match accessor.component_type.unwrap().0 {
+                    ComponentType::I8 => convert_dimensions::<i8>(
+                        accessor.type_.unwrap().multiplicity(),
+                        target_dimension.multiplicity(),
+                        accessor_contents.as_slice(),
+                    ),
+                    ComponentType::U8 => convert_dimensions::<u8>(
+                        accessor.type_.unwrap().multiplicity(),
+                        target_dimension.multiplicity(),
+                        accessor_contents.as_slice(),
+                    ),
+                    ComponentType::I16 => convert_dimensions::<i16>(
+                        accessor.type_.unwrap().multiplicity(),
+                        target_dimension.multiplicity(),
+                        accessor_contents.as_slice(),
+                    ),
+                    ComponentType::U16 => convert_dimensions::<u16>(
+                        accessor.type_.unwrap().multiplicity(),
+                        target_dimension.multiplicity(),
+                        accessor_contents.as_slice(),
+                    ),
+                    ComponentType::U32 => convert_dimensions::<u32>(
+                        accessor.type_.unwrap().multiplicity(),
+                        target_dimension.multiplicity(),
+                        accessor_contents.as_slice(),
+                    ),
+                    ComponentType::F32 => convert_dimensions::<f32>(
+                        accessor.type_.unwrap().multiplicity(),
+                        target_dimension.multiplicity(),
+                        accessor_contents.as_slice(),
+                    ),
                 };
-            println!(
-                "Transforming CType: {:?} -> {:?}",
-                accessor.component_type.unwrap().0,
-                target_component_type
-            );
-            println!(
-                "Transforming dimension: {:?} -> {:?}",
-                accessor.type_.unwrap().multiplicity(),
-                target_dimension.multiplicity()
-            );
-            // Use a temporary entry struct as the asset version requires a buffer view which we
-            // do not have
-            let mut entry = structs::Accessor {
-                name: Some(format![
-                    "{} accessor {:?} {}",
-                    primitive.name.as_ref().unwrap(),
-                    semantic.clone(),
-                    accessor_index,
-                ]),
-                handle: Some(accessor.clone()),
-                semantic: semantic.clone(),
-                component_type: target_component_type,
-                dimension: target_dimension,
-                component_size: target_component_type.size(),
-                index: accessor_index,
-                size: 0,
-                offset: 0,
-            };
+                // Now convert types (i hate this code)
+                let mut accessor_contents =
+                    match (accessor.component_type.unwrap().0, target_component_type) {
+                        // Same types
+                        (ComponentType::I8, ComponentType::I8) => accessor_contents,
+                        (ComponentType::U8, ComponentType::U8) => accessor_contents,
+                        (ComponentType::I16, ComponentType::I16) => accessor_contents,
+                        (ComponentType::U16, ComponentType::U16) => accessor_contents,
+                        (ComponentType::U32, ComponentType::U32) => accessor_contents,
+                        (ComponentType::F32, ComponentType::F32) => accessor_contents,
+                        // i8 -> *
+                        (ComponentType::I8, ComponentType::U8) => {
+                            cast_bytes_slice_type::<i8, u8>(&accessor_contents)
+                        }
+                        (ComponentType::I8, ComponentType::I16) => {
+                            cast_bytes_slice_type::<i8, i16>(&accessor_contents)
+                        }
+                        (ComponentType::I8, ComponentType::U16) => {
+                            cast_bytes_slice_type::<i8, u16>(&accessor_contents)
+                        }
+                        (ComponentType::I8, ComponentType::U32) => {
+                            cast_bytes_slice_type::<i8, u32>(&accessor_contents)
+                        }
+                        (ComponentType::I8, ComponentType::F32) => {
+                            cast_bytes_slice_type::<i8, f32>(&accessor_contents)
+                        }
+                        // u8 -> *
+                        (ComponentType::U8, ComponentType::I8) => {
+                            cast_bytes_slice_type::<u8, i8>(&accessor_contents)
+                        }
+                        (ComponentType::U8, ComponentType::I16) => {
+                            cast_bytes_slice_type::<u8, i16>(&accessor_contents)
+                        }
+                        (ComponentType::U8, ComponentType::U16) => {
+                            cast_bytes_slice_type::<u8, u16>(&accessor_contents)
+                        }
+                        (ComponentType::U8, ComponentType::U32) => {
+                            cast_bytes_slice_type::<u8, u32>(&accessor_contents)
+                        }
+                        (ComponentType::U8, ComponentType::F32) => {
+                            cast_bytes_slice_type::<u8, f32>(&accessor_contents)
+                        }
+                        // i16 -> *
+                        (ComponentType::I16, ComponentType::I8) => {
+                            cast_bytes_slice_type::<i16, i8>(&accessor_contents)
+                        }
+                        (ComponentType::I16, ComponentType::U8) => {
+                            cast_bytes_slice_type::<i16, u8>(&accessor_contents)
+                        }
+                        (ComponentType::I16, ComponentType::U16) => {
+                            cast_bytes_slice_type::<i16, u16>(&accessor_contents)
+                        }
+                        (ComponentType::I16, ComponentType::U32) => {
+                            cast_bytes_slice_type::<i16, u32>(&accessor_contents)
+                        }
+                        (ComponentType::I16, ComponentType::F32) => {
+                            cast_bytes_slice_type::<i16, f32>(&accessor_contents)
+                        }
+                        // u16 -> *
+                        (ComponentType::U16, ComponentType::I8) => {
+                            cast_bytes_slice_type::<u16, i8>(&accessor_contents)
+                        }
+                        (ComponentType::U16, ComponentType::U8) => {
+                            cast_bytes_slice_type::<u16, u8>(&accessor_contents)
+                        }
+                        (ComponentType::U16, ComponentType::I16) => {
+                            cast_bytes_slice_type::<u16, i16>(&accessor_contents)
+                        }
+                        (ComponentType::U16, ComponentType::U32) => {
+                            cast_bytes_slice_type::<u16, u32>(&accessor_contents)
+                        }
+                        (ComponentType::U16, ComponentType::F32) => {
+                            cast_bytes_slice_type::<u16, f32>(&accessor_contents)
+                        }
+                        // u32 -> *
+                        (ComponentType::U32, ComponentType::I8) => {
+                            cast_bytes_slice_type::<u32, i8>(&accessor_contents)
+                        }
+                        (ComponentType::U32, ComponentType::U8) => {
+                            cast_bytes_slice_type::<u32, u8>(&accessor_contents)
+                        }
+                        (ComponentType::U32, ComponentType::I16) => {
+                            cast_bytes_slice_type::<u32, i16>(&accessor_contents)
+                        }
+                        (ComponentType::U32, ComponentType::U16) => {
+                            cast_bytes_slice_type::<u32, u16>(&accessor_contents)
+                        }
+                        (ComponentType::U32, ComponentType::F32) => {
+                            cast_bytes_slice_type::<u32, f32>(&accessor_contents)
+                        }
+                        // f32 -> *
+                        (ComponentType::F32, ComponentType::I8) => {
+                            cast_bytes_slice_type::<f32, i8>(&accessor_contents)
+                        }
+                        (ComponentType::F32, ComponentType::U8) => {
+                            cast_bytes_slice_type::<f32, u8>(&accessor_contents)
+                        }
+                        (ComponentType::F32, ComponentType::I16) => {
+                            cast_bytes_slice_type::<f32, i16>(&accessor_contents)
+                        }
+                        (ComponentType::F32, ComponentType::U16) => {
+                            cast_bytes_slice_type::<f32, u16>(&accessor_contents)
+                        }
+                        (ComponentType::F32, ComponentType::U32) => {
+                            cast_bytes_slice_type::<f32, u32>(&accessor_contents)
+                        }
+                        (_, _) => {
+                            panic!("Unsupported component type conversion!");
+                        }
+                    };
+                println!(
+                    "Transforming CType: {:?} -> {:?}",
+                    accessor.component_type.unwrap().0,
+                    target_component_type
+                );
+                println!(
+                    "Transforming dimension: {:?} -> {:?}",
+                    accessor.type_.unwrap().multiplicity(),
+                    target_dimension.multiplicity()
+                );
+                // Use a temporary entry struct as the asset version requires a buffer view which we
+                // do not have
+                let mut entry = structs::Accessor {
+                    name: Some(format![
+                        "{} accessor {:?} {}",
+                        primitive.name.as_ref().unwrap(),
+                        semantic.clone(),
+                        accessor_index,
+                    ]),
+                    handle: Some(accessor.clone()),
+                    semantic: semantic.clone(),
+                    component_type: target_component_type,
+                    dimension: target_dimension,
+                    component_size: target_component_type.size(),
+                    index: accessor_index,
+                    size: 0,
+                    offset: 0,
+                };
 
-            // Determine padding
-            let alignment = target_component_type.size() * target_dimension.multiplicity();
-            let padding = alignment - (monolithic_buffer.len() % alignment);
-            monolithic_buffer.extend(vec![0u8; padding]);
+                // Determine padding
+                let alignment = target_component_type.size() * target_dimension.multiplicity();
+                let padding = alignment - (monolithic_buffer.len() % alignment);
+                monolithic_buffer.extend(vec![0u8; padding]);
 
-            // Get contents of the accessor, add to the monolithic buffer, update offsets
-            entry.size = accessor_contents.len();
-            entry.offset = monolithic_buffer.len();
-            monolithic_buffer.append(&mut accessor_contents);
-            println!("{:?}", entry);
+                // Get contents of the accessor, add to the monolithic buffer, update offsets
+                entry.size = accessor_contents.len();
+                entry.offset = monolithic_buffer.len();
+                monolithic_buffer.append(&mut accessor_contents);
+                println!("{:?}", entry);
 
-            accessor_struct_views.push(entry);
-            // Put index of the accessor struct in the vector
-            primitive
-                .accessors
-                .insert(semantic.clone(), accessor_struct_views.len() - 1);
+                accessor_struct_views.push(entry);
+                // Put index of the accessor struct in the vector
+                primitive
+                    .accessors
+                    .insert(semantic.clone(), accessor_struct_views.len() - 1);
+                processed_accessors.insert(
+                    (
+                        accessor_index,
+                        get_component_type_index(target_component_type),
+                        get_dimension_index(target_dimension),
+                    ),
+                    accessor_struct_views.len() - 1,
+                );
+            }
         };
 
         // Handle indices separately as for some reason they're not included
@@ -930,7 +1004,7 @@ fn load_materials_from_primitives(
         let primitive_material = match primitive.handle.as_ref().unwrap().material {
             None => assets::material::Material {
                 albedo_texture: None,
-                albedo_color: glam::Vec3::new(75f32 / 255f32, 0f32, 130f32 / 255f32),
+                albedo_color: glam::Vec3::from([0.5, 0.5, 0.5]),
                 normal_texture: None,
                 emissive_texture: None,
                 emissive_factor: glam::Vec3::ZERO,
@@ -938,7 +1012,10 @@ fn load_materials_from_primitives(
                 diffuse_texture: None,
                 specular_factor: glam::Vec3::ONE,
                 glossiness_factor: 1f32,
-                specular_glosiness_texture: None,
+                specular_glossiness_texture: None,
+                metallic_factor: 1.0,
+                roughness_factor: 1.0,
+                metallic_roughness_texture: None,
             },
             Some(index) => {
                 let gltf_material = &document.materials[index.value()];
@@ -1042,13 +1119,19 @@ fn load_materials_from_primitives(
                                 .unwrap_or(1f32)
                         })
                         .unwrap_or(1f32),
-                    specular_glosiness_texture: gltf_material.extensions.as_ref().and_then(|x| {
+                    specular_glossiness_texture: gltf_material.extensions.as_ref().and_then(|x| {
                         x.pbr_specular_glossiness.as_ref().and_then(|x| {
                             x.specular_glossiness_texture
                                 .as_ref()
                                 .and_then(|x| get_texture(x.index.value()))
                         })
                     }),
+                    metallic_factor: pbr_material.metallic_factor.0,
+                    roughness_factor: pbr_material.roughness_factor.0,
+                    metallic_roughness_texture: pbr_material
+                        .metallic_roughness_texture
+                        .as_ref()
+                        .and_then(|x| get_texture(x.index.value())),
                 }
             }
         };
@@ -1125,7 +1208,8 @@ fn get_accessors_contents(
     document: &gltf::json::Root,
     buffers: &[Vec<u8>],
 ) -> Vec<u8> {
-    let total_byte_offset = (accessor.byte_offset + buffer_view.byte_offset.unwrap_or(0)) as usize;
+    let total_byte_offset =
+        (accessor.byte_offset.unwrap_or(0) + buffer_view.byte_offset.unwrap_or(0)) as usize;
     let entry_size =
         accessor.component_type.unwrap().0.size() * accessor.type_.unwrap().multiplicity();
     let view_stride = buffer_view
@@ -1288,7 +1372,9 @@ pub fn gltf_load(
                 normal_buffer: get_accessor(structs::AccessorSemantic::Gltf(
                     gltf::Semantic::Normals,
                 )),
-                tangent_buffer: None,
+                tangent_buffer: get_accessor(structs::AccessorSemantic::Gltf(
+                    gltf::Semantic::Tangents
+                )),
                 tex_buffer: get_accessor(structs::AccessorSemantic::Gltf(
                     gltf::Semantic::TexCoords(0),
                 )),

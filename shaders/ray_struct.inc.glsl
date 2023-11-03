@@ -4,8 +4,8 @@ struct Ray {
     vec2 uv;
     uint seed;
 
-    vec3 hit_value;
     vec3 incoming_light;
+    vec3 hit_value;
     bool missed;
 
     uint depth; // # of iterations the current ray has gone through
@@ -16,6 +16,9 @@ struct Ray {
 struct Payload {
     Ray current;
     Ray previous;
+
+    vec3 camera_position;
+    vec3 original_ray_origin;
 };
 
 /// Describes the material properties of the object
@@ -27,8 +30,9 @@ struct MaterialDescription {
     vec4 normal; // x,y,z unused. w is texture index
     vec4 emissive;
     vec4 diffuse_factor;
-    vec4 specular_glossiness_factor; // rgb -> specular, a -> specular
+    vec4 specular_glossiness_factor; // rgb -> glossiness, a -> specular
     vec4 specular_glossiness_diffuse_texture; // r -> specular glossiness texture, b -> diffuse texture
+    vec4 metallic_roughness; // r -> metallic-roughness texture, g -> roughness, b -> metallness
 };
 
 /// Represents the values of a material description
@@ -51,6 +55,7 @@ struct ObjectDescription {
     uint64_t vertex_buffer;
     uint64_t index_buffer;
     uint64_t normal_buffer;
+    uint64_t tangent_buffer;
     uint64_t tex_buffer;
     int material;
 };

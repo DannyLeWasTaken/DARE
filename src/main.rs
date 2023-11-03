@@ -103,16 +103,16 @@ impl app::App for Raytracing {
          */
         let scene = assets::scene::Scene::load(assets::scene::SceneLoadInfo::gltf {
             context: ctx.clone(),
-            //path: std::path::PathBuf::from(gltf_sample_name("ABeautifulGame")),
             //path: std::path::PathBuf::from(gltf_sample_name("MetalRoughSpheres")),
-            path: std::path::PathBuf::from(gltf_sample_name("Lantern")),
+            //path: std::path::PathBuf::from(gltf_sample_name("MetalRoughSpheres")),
+            //path: std::path::PathBuf::from(gltf_sample_name("Lantern")),
             //path: std::path::PathBuf::from(gltf_sample_name("BoomBoxWithAxes")),
             //path: std::path::PathBuf::from(
-            //    "C:/Users/Danny/Documents/deccer-cubes/SM_Deccer_Cubes_Textured.gltf",
+            //    "C:/Users/Danny/Documents/deccer-cubes/SM_Deccer_Cubes.gltf",
             //),
             //path: std::path::PathBuf::from(gltf_sample_name("TextureCoordinateTest")),
-            //path: std::path::PathBuf::from(gltf_sample_name("Sponza")),
-            //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/Bistro/bistro.glb"),
+            //path: std::path::PathBuf::from(gltf_sample_name("OrientationTest")),
+            // path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/Bistro/bistro.glb"),
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/minecraft_castle/scene.gltf",
             //),
@@ -128,6 +128,22 @@ impl app::App for Raytracing {
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/cornellBox/BJS-2.79-Cycles-gltf/assets/cornellBox-2.79-Cycles-gltf.gltf",
             //),
+            path: std::path::PathBuf::from(
+                "C:/Users/Danny/Documents/Assets/cornellBox/BJS-2.80-Eevee-gltf/assets/cornellBox-2.80-Eevee-gltf.gltf"
+            ),
+            //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/small_city.glb"),
+            //path: std::path::PathBuf::from(
+            //    "C:/Users/Danny/Documents/Assets/Classroom/classroom.glb",
+            //),
+            //path: std::path::PathBuf::from(
+            //    "C:/Users/Danny/Documents/Assets/junk_shop/Blender.gltf",
+            //),
+            //path: std::path::PathBuf::from(
+            //    "C:/Users/Danny/Documents/Assets/path_tracing/path_tracing.glb",
+            //),
+            //path: std::path::PathBuf::from(gltf_sample_name("Sponza")),
+            //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/mesh_crash/scene.gltf"),
+            //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/")
         })
         .unwrap();
         println!("[main]: Scene has {} mesh(es)", scene.meshes.len());
@@ -240,7 +256,7 @@ impl app::App for Raytracing {
             .execute_fn(|cmd, ifc, bindings, _| {
                 let view = self.camera.view;
                 let mut projection = glam::Mat4::perspective_rh(
-                    90.0_f32.to_radians(),
+                    45.0_f32.to_radians(),
                     self.render_extent.width as f32 / self.render_extent.height as f32,
                     0.001,
                     1024.0,
