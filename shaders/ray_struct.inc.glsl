@@ -4,8 +4,8 @@ struct Ray {
     vec2 uv;
     uint seed;
 
-    vec3 hit_value;
     vec3 incoming_light;
+    vec3 hit_value;
     bool missed;
 
     uint depth; // # of iterations the current ray has gone through
@@ -55,6 +55,7 @@ struct ObjectDescription {
     uint64_t vertex_buffer;
     uint64_t index_buffer;
     uint64_t normal_buffer;
+    uint64_t tangent_buffer;
     uint64_t tex_buffer;
     int material;
 };

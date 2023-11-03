@@ -1,4 +1,5 @@
 mod gltf;
+mod utility;
 
 use crate::assets;
 use anyhow::Result;

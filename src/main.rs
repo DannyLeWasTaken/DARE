@@ -112,7 +112,7 @@ impl app::App for Raytracing {
             //),
             //path: std::path::PathBuf::from(gltf_sample_name("TextureCoordinateTest")),
             //path: std::path::PathBuf::from(gltf_sample_name("OrientationTest")),
-            //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/Bistro/bistro.glb"),
+            // path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/Bistro/bistro.glb"),
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/minecraft_castle/scene.gltf",
             //),
@@ -143,6 +143,7 @@ impl app::App for Raytracing {
             //),
             //path: std::path::PathBuf::from(gltf_sample_name("Sponza")),
             //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/mesh_crash/scene.gltf"),
+            //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/")
         })
         .unwrap();
         println!("[main]: Scene has {} mesh(es)", scene.meshes.len());

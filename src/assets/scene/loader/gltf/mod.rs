@@ -413,7 +413,7 @@ fn convert_dimensions<T: bytemuck::Zeroable + bytemuck::Pod + Sync + Send>(
 
 #[cfg(test)]
 mod tests {
-    use crate::assets::scene::loader::gltf::*;
+    use crate::assets::scene::loader::r#mod::*;
     use bytemuck;
 
     #[test]
@@ -1372,7 +1372,9 @@ pub fn gltf_load(
                 normal_buffer: get_accessor(structs::AccessorSemantic::Gltf(
                     gltf::Semantic::Normals,
                 )),
-                tangent_buffer: None,
+                tangent_buffer: get_accessor(structs::AccessorSemantic::Gltf(
+                    gltf::Semantic::Tangents
+                )),
                 tex_buffer: get_accessor(structs::AccessorSemantic::Gltf(
                     gltf::Semantic::TexCoords(0),
                 )),

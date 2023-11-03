@@ -22,8 +22,8 @@ layout(location = 0) rayPayloadEXT Payload payload;
 
 void main() {
     // Default values for the payload
-    payload.current.hit_value = vec3(1.0);
     payload.current.incoming_light = vec3(0.0);
+    payload.current.hit_value = vec3(1.0);
     payload.current.missed = false;
     payload.current.depth = 0;
     payload.current.bounces = 0;
@@ -55,7 +55,7 @@ void main() {
     payload.camera_position = cam_pos;
     payload.original_ray_origin = origin.xyz;
 
-    while (!payload.current.missed && payload.current.depth <= 10 && payload.current.bounces <= 5) {
+    while (!payload.current.missed && payload.current.depth <= 10 && payload.current.bounces <= 4) {
         // Do the actual ray tracing
         traceRayEXT(
             tlas,                   // Top-level acceleration structure

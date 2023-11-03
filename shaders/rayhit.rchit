@@ -11,6 +11,7 @@
 #include "ray_struct.inc.glsl"
 #include "sampler.inc.glsl"
 #include "lighting.inc.glsl"
+#include "utility.inc.glsl"
 
 hitAttributeEXT vec2 attribs;
 
@@ -18,6 +19,7 @@ layout(location = 0) rayPayloadInEXT Payload payload;
 
 layout(buffer_reference, scalar) buffer Vertices { vec3 v[]; }; // Vertices
 layout(buffer_reference, scalar) buffer Normals { vec3 v[]; }; // Normals
+layout(buffer_reference, scalar) buffer Tangents { vec4 t[]; }; // Tangents
 layout(buffer_reference, scalar) buffer TexCoords { vec2 v[]; }; // TexCoords
 layout(buffer_reference, scalar) buffer Indices { uvec3 i[]; }; // Triangle indices
 //layout(buffer_reference, scalar) buffer ObjectDescriptionArray {ObjectDescription i[]; }; // Triangle indices
@@ -52,6 +54,7 @@ void main() {
         MaterialDescription material_resource = MaterialDescriptionArray.m[object_resource.material];
         Vertices vertices = Vertices(object_resource.vertex_buffer);
         Normals normals = Normals(object_resource.normal_buffer);
+        Tangents tangents = Tangents(object_resource.tangent_buffer);
         TexCoords tex_coords = TexCoords(object_resource.tex_buffer);
         Indices indices = Indices(object_resource.index_buffer);
 
@@ -62,6 +65,10 @@ void main() {
         vec3 v0 = vertices.v[ind.x];
         vec3 v1 = vertices.v[ind.y];
         vec3 v2 = vertices.v[ind.z];
+        // Get their world positions as well
+        vec3 v0_world = vec3(gl_ObjectToWorldEXT * vec4(v0, 1.0));
+        vec3 v1_world = vec3(gl_ObjectToWorldEXT * vec4(v1, 1.0));
+        vec3 v2_world = vec3(gl_ObjectToWorldEXT * vec4(v2, 1.0));
         const vec3 position = v0 * barycentrics.x + v1 * barycentrics.y + v2 * barycentrics.z;
         const vec3 world_position = vec3(gl_ObjectToWorldEXT * vec4(position, 1.0));  // Transforming the position to world space
         //const vec3 world_position = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
@@ -69,34 +76,72 @@ void main() {
         // Normal
         vec3 normal;
         vec3 world_normal;
-        vec3 geometry_normal = normalize(cross(v0 - v1, v2 - v0));
-        vec3 world_geometry_normal = normalize(vec3(geometry_normal * gl_WorldToObjectEXT));
+        const vec3 geometry_normal = normalize(cross(v1 - v0, v2 - v0));
+        const vec3 geometry_world_normal = normalize(cross(v1_world - v0_world, v2_world - v0_world));
         if (object_resource.tex_buffer > 0 && material_resource.normal.w > -1) {
+            // Use normals found in the texture
             // Tex coords of the triangle
             vec2 t_v0 = tex_coords.v[ind.x];
             vec2 t_v1 = tex_coords.v[ind.y];
             vec2 t_v2 = tex_coords.v[ind.z];
             vec2 tex_coords = t_v0 * barycentrics.x + t_v1 * barycentrics.y + t_v2 * barycentrics.z;
             normal = texture(texture_samplers[nonuniformEXT(int(material_resource.normal.w))], tex_coords).rgb;
+            // Scaling according to gltf
+            normal = normal*2.0 - 1.0;
+            normal = normalize(normal);
+
+            // Get the TBN
+            mat3 TBN;
+            if (object_resource.tangent_buffer > 0) {
+                vec3 t0 = tangents.t[ind.x].xyz;
+                vec3 t1 = tangents.t[ind.y].xyz;
+                vec3 t2 = tangents.t[ind.z].xyz;
+                vec3 N = geometry_world_normal;
+                vec3 T = t0 * barycentrics.x + t1 * barycentrics.y + t2 * barycentrics.z;
+                vec3 B = cross(N, T) * tangents.t[ind.x].w;
+                TBN = mat3(T, B, N);
+            } else {
+                // Get the TBN
+                // TODO: this should be done prior as a pre-process step similar to how we generated our normals
+                vec3 edge_1 = v1_world - v0_world;
+                vec3 edge_2 = v2_world - v0_world;
+                vec2 delta_uv_1 = t_v1 - t_v0;
+                vec2 delta_uv_2 = t_v2 - t_v0;
+                float f = 1.0 / (delta_uv_1.x * delta_uv_2.y - delta_uv_2.x * delta_uv_1.y);
+                vec3 tangent = vec3(
+                f * (delta_uv_2.y * edge_1.x - delta_uv_1.y * edge_2.x),
+                f * (delta_uv_2.y * edge_1.y - delta_uv_1.y * edge_2.y),
+                f * (delta_uv_2.y * edge_1.z - delta_uv_1.y * edge_2.z)
+                );
+                vec3 T = normalize(vec3(gl_ObjectToWorldEXT * vec4(tangent, 0.0)));
+                vec3 N = geometry_world_normal;
+                vec3 B = cross(N, T); // EXPERIMENTAL
+                TBN = mat3(T, B, N);
+            }
+            world_normal = normalize(TBN * normal);
         } else if (object_resource.normal_buffer > 0) {
+            // Use normals found in the buffer
+            // https://github.com/nvpro-samples/vk_raytracing_tutorial_KHR/blob/ead5046b4a13cfb154d88f75fb865095b86e72da/ray_tracing__simple/shaders/raytrace.rchit#L74-L75
             vec3 n_v0 = normals.v[ind.x];
             vec3 n_v1 = normals.v[ind.y];
             vec3 n_v2 = normals.v[ind.z];
             normal = normalize(n_v0 * barycentrics.x + n_v1 * barycentrics.y + n_v2 * barycentrics.z);
+            world_normal = normalize(vec3(normal * gl_WorldToObjectEXT));
         } else {
+            // No other normals found, use geometry
             normal = geometry_normal;
+            world_normal = geometry_world_normal;
         }
-        world_normal = normalize(vec3(normal * gl_WorldToObjectEXT));
 
+        /*
         // Back-face processing
-        if (dot(gl_WorldRayDirectionEXT, -world_geometry_normal) > 0.0) {
+        if (dot(gl_WorldRayDirectionEXT, geometry_normal) < 0.0) {
             world_normal = -world_normal;
             normal = -normal;
             geometry_normal = -geometry_normal;
-            world_geometry_normal = -world_geometry_normal;
         }
+        */
 
-        vec3 final_color = payload.current.incoming_light;
         vec3 hit_value = payload.current.hit_value;
         vec3 albedo = vec3(1.0);
 
@@ -149,8 +194,7 @@ void main() {
 
         // Emissiveness
         vec3 emitted_light = vec3(0.0);
-        hit_value *= albedo;
-        if (material_resource.emissive.w > -1 && object_resource.tex_buffer > 0) {
+        if (material_resource.emissive.w > -1 && object_resource.tex_buffer > 1) {
             vec2 t_v0 = tex_coords.v[ind.x];
             vec2 t_v1 = tex_coords.v[ind.y];
             vec2 t_v2 = tex_coords.v[ind.z];
@@ -159,37 +203,53 @@ void main() {
         } else {
             emitted_light = material_resource.emissive.rgb;
         }
-        emitted_light *= 20.f;
-
-        // Compute reflection
-        vec3 incoming_direction = normalize(payload.current.ray_direction);
-        vec3 reflected_direction = reflect(incoming_direction, world_normal);
+        emitted_light *= 5.f;
 
         vec3 tangent, bitangent;
         createCoordinateSystem(world_normal, tangent, bitangent);
-
+        /**
         vec3 hemisphere_direction = samplingHemisphereUniform(
             payload.current.seed,
             tangent,
             bitangent,
             world_normal
         );
-        vec3 ray_direction = mix(reflected_direction, hemisphere_direction, roughness);
-        // Frensel-slick approximation
-        float cos_theta = clamp(dot(incoming_direction, world_normal), 0.0, 1.0);
-        vec3 F_0 = mix(vec3(0.04), albedo, metallic);
-        vec3 frensel = F_0 + (1.0 - F_0) * pow(1.0 - cos_theta, 5.0);
+        **/
+        //vec3 hemisphere_direction = random_hemisphere_on_normal(payload.current.seed, normal);
 
-        // Blend the reflection based on the frensel term and add it to the final color
-        vec3 reflection_contribution = frensel * payload.current.incoming_light;
-        final_color += (emitted_light == vec3(0.f) ? hit_value : (albedo == vec3(0.f) ? (hit_value/albedo) : hit_value)) * (reflection_contribution + (emitted_light * metallic));
+        // Handle lambertians
+        vec3 ray_direction = world_normal + random_unit_vector_2(payload.current.seed);
+        // Catch degenerate directions (zero vector)
+        if (near_zero(ray_direction)) {
+            ray_direction = world_normal;
+        }
 
-        payload.current.incoming_light = final_color;
-        payload.current.hit_value = hit_value;
-        payload.current.ray_origin = world_position;
+        // Handle metallics
+        if (metallic > 0 && rnd(payload.current.seed) < metallic) {
+            // Reflect!
+            ray_direction = (roughness*random_unit_vector_2(payload.current.seed)) + reflect(normalize(payload.current.ray_direction), world_normal);
+            if (dot(ray_direction, world_normal) <= 0) {
+                // Terminate now!
+                //albedo *= vec3(-dot(ray_direction, world_normal),0,0);
+                hit_value *= vec3(0);
+                payload.current.missed = true;
+            }
+        }
 
-        // Update the payload with the reflect direction
+        // Add light emission in (if applicable)
+        hit_value = (hit_value * albedo);
+        //emitted_light = vec3(1);
+        if (length(emitted_light) > 0 || near_zero(hit_value)) {
+            // Stop tracing rays after we have hit a light source
+            payload.current.missed = true;
+        }
+
         payload.current.ray_direction = normalize(ray_direction);
+        payload.current.hit_value = hit_value;
+        payload.current.incoming_light += hit_value * emitted_light;
+        payload.current.ray_origin = world_position;
+        // Apply slight offset from ray_origin to prevent offsets
+        apply_position_offset(payload.current, geometry_world_normal, 1e-5);
     }
     payload.current.bounces += 1;
 }

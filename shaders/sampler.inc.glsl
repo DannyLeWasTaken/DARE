@@ -1,5 +1,18 @@
 #include "random.inc.glsl"
 
+vec3 random_unit_vector_2(inout uint seed) {
+    return normalize(vec3(2*rnd(seed) - 1, 2*rnd(seed) - 1, 2*rnd(seed) - 1));
+}
+
+vec3 random_unit_on_hemisphere(inout uint seed, vec3 normal) {
+    vec3 unit_vec = random_unit_vector_2(seed);
+    if (dot(unit_vec, normal) > 0) {
+        return unit_vec;
+    } else {
+        return -unit_vec;
+    }
+}
+
 // Randomly samples from a cosine-weighted hemisphere oriented in the `z` direction.
 // From Ray Tracing Gems section 16.6.1, "Cosine-Weighted Hemisphere Oriented to the Z-Axis"
 vec3 samplingHemisphere(inout uint seed, in vec3 x, in vec3 y, in vec3 z)
