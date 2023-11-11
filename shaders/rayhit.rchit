@@ -224,24 +224,28 @@ void main() {
             ray_direction = world_normal;
         }
 
-        // Handle metallics
-        if (metallic > 0 && rnd(payload.current.seed) < metallic) {
-            // Reflect!
-            ray_direction = (roughness*random_unit_vector_2(payload.current.seed)) + reflect(normalize(payload.current.ray_direction), world_normal);
-            if (dot(ray_direction, world_normal) <= 0) {
-                // Terminate now!
-                //albedo *= vec3(-dot(ray_direction, world_normal),0,0);
-                hit_value *= vec3(0);
-                payload.current.missed = true;
-            }
-        }
-
         // Add light emission in (if applicable)
-        hit_value = (hit_value * albedo);
         //emitted_light = vec3(1);
         if (length(emitted_light) > 0 || near_zero(hit_value)) {
             // Stop tracing rays after we have hit a light source
+            if (length(albedo) > 0.001) {
+                // You cannot have a black light source??
+                hit_value *= albedo;
+            }
             payload.current.missed = true;
+        } else {
+            hit_value *= albedo;
+            // Handle metallics
+            // Reflect!
+            if (metallic > 0 && rnd(payload.current.seed) < metallic) {
+                ray_direction = (roughness*random_unit_vector_2(payload.current.seed)) + reflect(normalize(payload.current.ray_direction), world_normal);
+                if (dot(ray_direction, world_normal) <= 0) {
+                    // Terminate now!
+                    //albedo *= vec3(-dot(ray_direction, world_normal),0,0);
+                    hit_value *= (1.0 - metallic);
+                    payload.current.missed = true;
+                }
+            }
         }
 
         payload.current.ray_direction = normalize(ray_direction);

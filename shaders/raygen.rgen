@@ -55,7 +55,7 @@ void main() {
     payload.camera_position = cam_pos;
     payload.original_ray_origin = origin.xyz;
 
-    while (!payload.current.missed && payload.current.depth <= 10 && payload.current.bounces <= 4) {
+    while (!payload.current.missed && payload.current.depth <= 10 && payload.current.bounces <= 8) {
         // Do the actual ray tracing
         traceRayEXT(
             tlas,                   // Top-level acceleration structure

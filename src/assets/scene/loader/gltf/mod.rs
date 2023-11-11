@@ -413,7 +413,7 @@ fn convert_dimensions<T: bytemuck::Zeroable + bytemuck::Pod + Sync + Send>(
 
 #[cfg(test)]
 mod tests {
-    use crate::assets::scene::loader::r#mod::*;
+    use crate::assets::scene::loader::gltf;
     use bytemuck;
 
     #[test]
@@ -421,18 +421,18 @@ mod tests {
         let values = [0u8, 1u8, 3u8, 0u8, 4u8, 3u8];
 
         // Expanding
-        let converted_values = convert_dimensions::<u8>(3, 4, values.as_slice());
+        let converted_values = gltf::convert_dimensions::<u8>(3, 4, values.as_slice());
         assert_eq!(converted_values, [0u8, 1u8, 3u8, 0u8, 0u8, 4u8, 3u8, 0u8]);
 
         // Shortening
-        let converted_values = convert_dimensions::<u8>(3, 2, &values);
+        let converted_values = gltf::convert_dimensions::<u8>(3, 2, &values);
         assert_eq!(converted_values, [0u8, 1u8, 0u8, 4u8]);
 
-        let converted_values = convert_dimensions::<u8>(3, 1, &values);
+        let converted_values = gltf::convert_dimensions::<u8>(3, 1, &values);
         assert_eq!(converted_values, [0u8, 0u8]);
 
         // Same
-        let converted_values = convert_dimensions::<u8>(3, 3, &values);
+        let converted_values = gltf::convert_dimensions::<u8>(3, 3, &values);
         assert_eq!(converted_values, [0u8, 1u8, 3u8, 0u8, 4u8, 3u8]);
     }
 
@@ -440,14 +440,14 @@ mod tests {
     fn normalize_byte_slice() {
         let values = [f32::MAX, f32::MAX, 0f32];
         let normalized_values =
-            normalize_bytes_slice_type::<f32, u8>(bytemuck::cast_slice(values.as_slice()));
+            gltf::normalize_bytes_slice_type::<f32, u8>(bytemuck::cast_slice(values.as_slice()));
         assert_eq!(normalized_values, [u8::MAX, u8::MAX, 0u8]);
     }
 
     #[test]
     fn cast_byte_slice() {
         let values = [0u16, 4, 8, 2];
-        let casted_values = cast_bytes_slice_type::<u16, u32>(bytemuck::cast_slice(&values));
+        let casted_values = gltf::cast_bytes_slice_type::<u16, u32>(bytemuck::cast_slice(&values));
         let casted_values = bytemuck::cast_slice::<u8, u32>(&casted_values);
         assert_eq!(casted_values, [0u32, 4, 8, 2]);
     }

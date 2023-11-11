@@ -112,7 +112,7 @@ impl app::App for Raytracing {
             //),
             //path: std::path::PathBuf::from(gltf_sample_name("TextureCoordinateTest")),
             //path: std::path::PathBuf::from(gltf_sample_name("OrientationTest")),
-            // path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/Bistro/bistro.glb"),
+            //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/Bistro/bistro.glb"),
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/minecraft_castle/scene.gltf",
             //),
@@ -128,9 +128,9 @@ impl app::App for Raytracing {
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/cornellBox/BJS-2.79-Cycles-gltf/assets/cornellBox-2.79-Cycles-gltf.gltf",
             //),
-            path: std::path::PathBuf::from(
-                "C:/Users/Danny/Documents/Assets/cornellBox/BJS-2.80-Eevee-gltf/assets/cornellBox-2.80-Eevee-gltf.gltf"
-            ),
+            //path: std::path::PathBuf::from(
+            //    "C:/Users/Danny/Documents/Assets/cornellBox/BJS-2.80-Eevee-gltf/assets/cornellBox-2.80-Eevee-gltf.gltf"
+            //),
             //path: std::path::PathBuf::from("C:/Users/Danny/Documents/Assets/small_city.glb"),
             //path: std::path::PathBuf::from(
             //    "C:/Users/Danny/Documents/Assets/Classroom/classroom.glb",
@@ -505,7 +505,7 @@ impl app::App for Raytracing {
                 winit::event::WindowEvent::MouseWheel { delta, .. } => match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {
                         self.camera.speed += (self.camera.speed.abs()) * y * delta_time * 4.0f32;
-                        self.camera.speed = self.camera.speed.clamp(0.0, f32::MAX);
+                        self.camera.speed = self.camera.speed.clamp(1.0, f32::MAX);
                         println!("Camera speed: {}", self.camera.speed);
                     }
                     _ => {}
